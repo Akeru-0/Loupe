@@ -22,6 +22,8 @@ public actor Library {
     private let settings: LibrarySettings
     private let registry: FeatureRegistry
     private var watcher: FolderWatcher?
+    /// Set by `stop()`: watcher callbacks still queued afterwards are ignored.
+    private var isStopped = false
 
     // Actor reentrancy: every await inside scan/apply work could let another call in, so they queue here.
     private var busy = false
@@ -91,6 +93,7 @@ public actor Library {
     }
 
     public func stop() {
+        isStopped = true
         watcher?.stop()
         watcher = nil
     }
@@ -451,7 +454,9 @@ public actor Library {
     // MARK: - Watcher input
 
     public func handleFolderChanges(_ folders: Set<URL>, rescanAll: Bool) async {
+        guard !isStopped else { return }
         await serialized {
+            guard !isStopped else { return }  // stopped while waiting for the serial section
             let root = Self.realURL(location.rootURL)
             var relFolders = Set<String>()
             for url in folders {
@@ -501,6 +506,7 @@ public actor Library {
     // MARK: - Helpers
 
     private func logScanFailure(_ error: any Error) {
+        if error is CancellationError { return }  // the app replaced this library
         log("Scan failed, index kept: \(error)")
     }
 

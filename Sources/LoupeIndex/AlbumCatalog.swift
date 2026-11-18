@@ -18,11 +18,12 @@ public struct AlbumCatalog: Codable, Equatable, Sendable {
 
     public init(albums: [AlbumEntry] = []) { self.albums = albums }
 
-    /// Catalog order first (only albums that still exist), then unlisted known albums alphabetically.
+    /// Every catalog album in catalog order (albums without photos too), then known albums the catalog does not
+    /// list, alphabetically.
     public func orderedNames(including known: Set<String>) -> [String] {
         var seen = Set<String>()
         var result: [String] = []
-        for entry in albums where known.contains(entry.name) && seen.insert(entry.name).inserted {
+        for entry in albums where seen.insert(entry.name).inserted {
             result.append(entry.name)
         }
         result += known.subtracting(seen).sorted { $0.localizedStandardCompare($1) == .orderedAscending }

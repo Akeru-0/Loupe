@@ -25,7 +25,10 @@ public final class LibraryIndex: Sendable {
     public init(databaseURL: URL) throws {
         try FileManager.default.createDirectory(
             at: databaseURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-        dbPool = try DatabasePool(path: databaseURL.path)
+        var configuration = Configuration()
+        // A library being replaced may still finish a write on the same file; wait for it instead of failing.
+        configuration.busyMode = .timeout(5)
+        dbPool = try DatabasePool(path: databaseURL.path, configuration: configuration)
         try Schema.migrator().migrate(dbPool)
     }
 

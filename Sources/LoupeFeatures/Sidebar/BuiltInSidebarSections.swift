@@ -19,7 +19,8 @@ struct LibrarySidebarSection: SidebarSection {
     }
 }
 
-/// Albums known to the index, in catalog order. A corrupt catalog only loses the order.
+/// Catalog albums in catalog order (empty ones too), then other albums from the index. A corrupt catalog only
+/// loses the order and the empty albums.
 struct AlbumsSidebarSection: SidebarSection {
     let id = "albums"
     let title: String? = "Albums"

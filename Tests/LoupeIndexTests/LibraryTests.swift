@@ -93,6 +93,26 @@ private struct Env {
         #expect(try e.library.index.photo(id: id)?.rating == 5)
     }
 
+    @Test func stoppedLibraryIgnoresFolderChanges() async throws {
+        let e = try Env()
+        try e.lib.addJPEG("a/IMG_1.jpg")
+        try e.lib.addSidecar("a/IMG_1.xmp", rating: 1)
+        _ = await e.library.initialSync()
+        let id = try e.id("a/IMG_1")
+        let pushes = e.store.pushes
+        await e.library.stop()
+        try await Task.sleep(for: .milliseconds(1100))
+        try e.lib.addSidecar("a/IMG_1.xmp", rating: 5)
+        let sidecar = try Data(contentsOf: e.lib.url("a/IMG_1.xmp"))
+        try e.lib.addJPEG("a/IMG_2.jpg")
+        await e.library.handleFolderChanges([e.lib.url("a")], rescanAll: false)
+        await e.library.handleFolderChanges([e.lib.root], rescanAll: true)
+        #expect(try e.library.index.photo(id: id)?.rating == 1)
+        #expect(try e.library.index.photo(key: "a/IMG_2") == nil)
+        #expect(try Data(contentsOf: e.lib.url("a/IMG_1.xmp")) == sidecar)
+        #expect(e.store.pushes == pushes)
+    }
+
     @Test func ownWritesDoNotLoop() async throws {
         let e = try Env()
         try e.lib.addJPEG("a/IMG_1.jpg")

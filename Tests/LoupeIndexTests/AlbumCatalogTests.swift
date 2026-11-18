@@ -6,7 +6,10 @@ import LoupeTestSupport
 @Suite struct AlbumCatalogTests {
     @Test func albumOrderFollowsCatalog() {
         let catalog = AlbumCatalog(albums: [AlbumEntry(name: "B"), AlbumEntry(name: "A"), AlbumEntry(name: "Gone")])
-        #expect(catalog.orderedNames(including: ["A", "B", "C"]) == ["B", "A", "C"])
+        // Every catalog album (an empty one too), then unlisted known albums alphabetically.
+        #expect(catalog.orderedNames(including: ["A", "B", "C"]) == ["B", "A", "Gone", "C"])
+        #expect(AlbumCatalog(albums: [AlbumEntry(name: "B"), AlbumEntry(name: "A")])
+            .orderedNames(including: ["A", "B", "C"]) == ["B", "A", "C"])
     }
 
     @Test func catalogRoundTripsAndRejectsCorrupt() throws {

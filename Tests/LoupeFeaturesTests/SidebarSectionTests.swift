@@ -44,11 +44,11 @@ import LoupeTestSupport
         #expect(library.map(\.systemImage) == ["photo.on.rectangle", "heart", "clock"])
         #expect(library.allSatisfy { $0.dropTarget == nil && $0.children.isEmpty })
 
-        // Catalog order first (entries without photos dropped), then the rest alphabetically.
+        // Every catalog album in catalog order (an empty one too), then the index's other albums alphabetically.
         let albums = items[1]
-        #expect(albums.map(\.title) == ["Zebra", "Alpha", "Middle"])
-        #expect(albums.map(\.scope) == [.album("Zebra"), .album("Alpha"), .album("Middle")])
-        #expect(albums.map(\.dropTarget) == [.album("Zebra"), .album("Alpha"), .album("Middle")])
+        #expect(albums.map(\.title) == ["Zebra", "Gone", "Alpha", "Middle"])
+        #expect(albums.map(\.scope) == [.album("Zebra"), .album("Gone"), .album("Alpha"), .album("Middle")])
+        #expect(albums.map(\.dropTarget) == [.album("Zebra"), .album("Gone"), .album("Alpha"), .album("Middle")])
         #expect(albums.allSatisfy { $0.systemImage == "rectangle.stack" })
 
         let tags = items[2]
