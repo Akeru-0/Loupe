@@ -15,9 +15,9 @@ public struct ActionSelection: Sendable {
     }
 
     /// The focused version if set, otherwise each photo's display version, with its photo.
-    public func targets() -> [(url: URL, photo: PhotoRecord, version: VersionRecord)] {
+    public func targets() -> [(url: URL, photo: PhotoRecord?, version: VersionRecord)] {
         if let focusedVersion {
-            guard let photo = photos.first(where: { $0.id == focusedVersion.photoId }) ?? photos.first else { return [] }
+            let photo = photos.first(where: { $0.id == focusedVersion.photoId }) ?? photos.first
             return [(focusedVersion.url(in: root), photo, focusedVersion)]
         }
         return photos.compactMap { photo in

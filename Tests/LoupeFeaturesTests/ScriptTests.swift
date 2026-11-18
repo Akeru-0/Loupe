@@ -141,8 +141,14 @@ final class RevealCalls: @unchecked Sendable {
         let targets = sel.targets()
         #expect(targets.map(\.url) == sel.targetFiles())
         #expect(targets.map(\.url) == [root.appendingPathComponent("b/q.cr2")])
-        #expect(targets.map(\.photo.key) == ["b/q"])
+        #expect(targets.map { $0.photo?.key } == ["b/q"])
         #expect(targets.map(\.version.kind) == [.raw])
+    }
+
+    @Test func focusedVersionIsTargetEvenWithoutPhotos() {
+        let raw = version(2, "b/q.cr2", .raw, display: false)
+        let sel = ActionSelection(photos: [], versions: [:], focusedVersion: raw, root: root)
+        #expect(sel.targetFiles() == [root.appendingPathComponent("b/q.cr2")])
     }
 
     @Test func displayVersionsInOrderJoinedInEnvironment() async throws {
@@ -155,6 +161,7 @@ final class RevealCalls: @unchecked Sendable {
         #expect(sel.targets().map(\.url) == sel.targetFiles())
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("loupe-scripts-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
         let script = dir.appendingPathComponent("e.sh")
         try "#!/bin/sh\nprintf '%s|%s' \"$LOUPE_PHOTO_IDS\" \"$LOUPE_VERSION_KINDS\"\n".write(to: script, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)

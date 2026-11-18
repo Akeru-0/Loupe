@@ -20,7 +20,7 @@ public struct ScriptsAction: PhotoAction {
 
     @MainActor public func entries(for selection: ActionSelection) -> [ActionMenuEntry] {
         let targets = selection.targets()
-        let files = targets.map(\.url), keys = targets.map(\.photo.key), kinds = targets.map(\.version.kind)
+        let files = targets.map(\.url), keys = targets.map { $0.photo?.key ?? "" }, kinds = targets.map(\.version.kind)
         let directory = self.directory
         let reveal = self.reveal
         let shortcutRunner = self.shortcutRunner
