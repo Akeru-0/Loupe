@@ -13,6 +13,8 @@ public struct XMPDocument {
     var document: XMLDocument
     /// The `x:xmptk` value of the packet, if any.
     public let writerToolkit: String?
+    /// Whether any description carries properties in the LightCraft `lc:` namespace (Loupe never writes those).
+    public let hasLightCraftData: Bool
 
     public init(data: Data) throws {
         let doc: XMLDocument
@@ -31,12 +33,15 @@ public struct XMPDocument {
         var subjects: [String] = []
         var hierarchical: [String] = []
         var hasEdits = false
+        var hasLC = false
 
         for d in descriptions {
+            if (d.attributes ?? []).contains(where: { $0.uri == XMPNamespaces.lc }) { hasLC = true }
             if rating == nil, let text = Self.property(d, XMPNamespaces.xmp, "Rating") {
                 rating = Int(text.trimmingCharacters(in: .whitespacesAndNewlines))
             }
             for child in d.children?.compactMap({ $0 as? XMLElement }) ?? [] {
+                if child.uri == XMPNamespaces.lc { hasLC = true }
                 if Self.isElement(child, XMPNamespaces.dc, "subject") {
                     subjects += Self.listItems(child)
                 } else if Self.isElement(child, XMPNamespaces.lr, "hierarchicalSubject") {
@@ -49,6 +54,7 @@ public struct XMPDocument {
             }
         }
 
+        hasLightCraftData = hasLC
         var albums: [String] = []
         var isFavorite = false
         for item in subjects + hierarchical {

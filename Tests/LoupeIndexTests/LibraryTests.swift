@@ -228,4 +228,78 @@ private struct Env {
         await e.library.handleFolderChanges([e.lib.url("a")], rescanAll: false)
         #expect(try e.library.index.photo(id: id)?.rating == 0)
     }
+
+    @Test func unrelatedRescanDoesNotResolveEntries() async throws {
+        let (e, id, logs) = try await run(toolkit: "LightCraft")
+        #expect(logs.restored.count == 1)
+        try e.lib.addJPEG("a/IMG_1-edited.jpg")
+        await e.library.handleFolderChanges([e.lib.url("a")], rescanAll: false)
+        try writeLater(e, toolkit: "LightCraft", rating: 0)
+        await e.library.handleFolderChanges([e.lib.url("a")], rescanAll: false)
+        #expect(try e.library.index.photo(id: id)?.rating == 4)
+        #expect(logs.restored.count == 2)
+    }
+
+    @Test func applyBeforeWatcherDoesNotHideStaleRevert() async throws {
+        let e = try Env()
+        try e.lib.addJPEG("a/IMG_1.jpg")
+        _ = await e.library.initialSync()
+        let id = try e.id("a/IMG_1")
+        _ = await e.library.apply([.setRating(4)], to: [id])
+        let logs = Logs()
+        try writeLater(e, toolkit: "LightCraft", rating: 0)
+        _ = await e.library.apply([.addTag("x")], to: [id])
+        let m = try e.library.index.metadata(ofPhoto: id)
+        #expect(m.rating == 4)
+        #expect(m.tags == ["x"])
+        #expect(try e.sidecarText("a/IMG_1.xmp").contains("<xmp:Rating>4</xmp:Rating>"))
+        #expect(logs.restored.count == 1)
+    }
+
+    @Test func otherWriterChangeWinsAgainstLaterLightCraftSave() async throws {
+        let (e, id, logs) = try await run(toolkit: "Other")  // Loupe 4, another app sets 0
+        try writeLater(e, toolkit: "LightCraft", rating: 0)  // LightCraft's stale catalog value
+        await e.library.handleFolderChanges([e.lib.url("a")], rescanAll: false)
+        #expect(try e.library.index.photo(id: id)?.rating == 0)
+        #expect(logs.restored.isEmpty)
+    }
+
+    @Test func otherWriterKeepingOurValueLeavesEntryArmed() async throws {
+        let (e, id, logs) = try await run(toolkit: "Other", rewrite: 4)
+        try writeLater(e, toolkit: "LightCraft", rating: 0)
+        await e.library.handleFolderChanges([e.lib.url("a")], rescanAll: false)
+        #expect(try e.library.index.photo(id: id)?.rating == 4)
+        #expect(logs.restored.count == 1)
+    }
+
+    @Test func lightCraftMergedIntoLoupeCreatedSidecarIsRecognised() async throws {
+        let e = try Env()
+        try e.lib.addJPEG("a/IMG_1.jpg")
+        _ = await e.library.initialSync()
+        let id = try e.id("a/IMG_1")
+        _ = await e.library.apply([.setRating(4)], to: [id])
+        #expect(try e.sidecarText("a/IMG_1.xmp").contains("x:xmptk=\"Loupe\""))
+        let logs = Logs()
+        let merged = """
+        <?xpacket begin="" id="W5M0MpCehiHzreSzNTczkc9d"?>
+        <x:xmpmeta xmlns:x="adobe:ns:meta/" x:xmptk="Loupe">
+         <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+          <rdf:Description rdf:about="" xmlns:xmp="http://ns.adobe.com/xap/1.0/">
+           <xmp:CreatorTool>Loupe</xmp:CreatorTool>
+          </rdf:Description>
+          <rdf:Description rdf:about="" xmlns:xmp="http://ns.adobe.com/xap/1.0/" xmlns:lc="http://ns.lightcraft.app/lc/1.0/">
+           <xmp:Rating>0</xmp:Rating>
+           <lc:settings>{"version":1}</lc:settings>
+          </rdf:Description>
+         </rdf:RDF>
+        </x:xmpmeta>
+        <?xpacket end="w"?>
+        """
+        let url = e.lib.url("a/IMG_1.xmp")
+        try Data(merged.utf8).write(to: url, options: .atomic)
+        try FileManager.default.setAttributes([.modificationDate: Date().addingTimeInterval(10)], ofItemAtPath: url.path)
+        await e.library.handleFolderChanges([e.lib.url("a")], rescanAll: false)
+        #expect(try e.library.index.photo(id: id)?.rating == 4)
+        #expect(logs.restored.count == 1)
+    }
 }

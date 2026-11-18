@@ -18,8 +18,14 @@ public struct ScanReport: Equatable, Sendable {
     public var failed: [String] = []
     /// Ids of photos that were added or re-read during this scan (unchanged photos are not listed).
     public var scannedPhotoIDs: [Int64] = []
+    /// Ids of already indexed photos whose sidecar differs from the stamp stored before this scan.
+    public var sidecarChangedPhotoIDs: [Int64] = []
 
-    public init(added: Int = 0, updated: Int = 0, removed: Int = 0, failed: [String] = [], scannedPhotoIDs: [Int64] = []) {
+    public init(
+        added: Int = 0, updated: Int = 0, removed: Int = 0, failed: [String] = [], scannedPhotoIDs: [Int64] = [],
+        sidecarChangedPhotoIDs: [Int64] = []
+    ) {
+        self.sidecarChangedPhotoIDs = sidecarChangedPhotoIDs
         self.added = added
         self.updated = updated
         self.removed = removed
@@ -272,6 +278,9 @@ public final class Scanner: Sendable {
                 let id = try await save(group, sidecarModified: sidecarModified, existingId: old?.photo.id, legacy: legacy,
                                         folder: folder, root: root, report: &report)
                 report.scannedPhotoIDs.append(id)
+                if let old, !Self.sameStamp(old.photo.sidecarModified, sidecarModified) {
+                    report.sidecarChangedPhotoIDs.append(id)
+                }
                 if old == nil { report.added += 1 } else { report.updated += 1 }
             } catch is CancellationError {
                 throw CancellationError()
@@ -285,6 +294,14 @@ public final class Scanner: Sendable {
         guard !legacy.isEmpty else { return nil }
         return legacy.map { "\($0.lastPathComponent)@\(dates[$0.path]?.timeIntervalSince1970 ?? 0)" }
             .sorted().joined(separator: "|")
+    }
+
+    static func sameStamp(_ stored: Date?, _ current: Date?) -> Bool {
+        switch (stored, current) {
+        case (nil, nil): true
+        case let (a?, b?): close(a, b)
+        default: false
+        }
     }
 
     private static func close(_ a: Date, _ b: Date) -> Bool { abs(a.timeIntervalSince(b)) < 0.001 }

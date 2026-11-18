@@ -23,6 +23,19 @@ public enum StaleRevertGuard {
 
     static let present = "present", absent = "absent"
 
+    /// LightCraft merges into sidecars Loupe created and keeps their `x:xmptk` ("Loupe"), but rewrites all `lc:` data
+    /// on every save, and Loupe never writes `lc:`. So `lc:` data in a Loupe-toolkit packet also means LightCraft.
+    public static func isLightCraft(_ doc: XMPDocument) -> Bool {
+        guard let toolkit = doc.writerToolkit else { return false }
+        return toolkit.hasPrefix("LightCraft") || (toolkit == "Loupe" && doc.hasLightCraftData)
+    }
+
+    /// For a sidecar changed by another writer: disk wins. Entries whose current value is not Loupe's `value`
+    /// are dropped; entries still equal to `value` are kept.
+    public static func resolvedByOtherWriter(_ pending: [Pending], current: PhotoMetadata) -> [Pending] {
+        pending.filter { currentValue(of: $0.field, in: current) != $0.value }
+    }
+
     // MARK: - Recording
 
     /// Entries for the fields `changes` actually change, relative to `before`.

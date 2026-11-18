@@ -76,7 +76,7 @@ public actor Library {
             var report = ScanReport()
             do { report = try await scanner.fullScan() } catch { logScanFailure(error) }
             logFailed(report)
-            await guardAgainstStaleRevert(photoIDs: report.scannedPhotoIDs)
+            await guardAgainstStaleRevert(photoIDs: report.sidecarChangedPhotoIDs)
             for id in ((try? index.allPhotos()) ?? []).compactMap(\.id) {
                 await syncStores(photoID: id, pushIfUnchanged: true)
             }
@@ -112,7 +112,11 @@ public actor Library {
         // A photo whose files are all gone must not get a fresh sidecar; the next scan removes it.
         guard !mediaURLs.isEmpty else { throw CocoaError(.fileNoSuchFile) }
 
-        let before = try index.metadata(ofPhoto: id)
+        // A write by LightCraft or anyone else may not have reached the index yet (watcher latency); settle it first,
+        // or this write would carry the stale values forward and re-stamp them as ours.
+        if track { await guardIfSidecarChangedSinceStamp(photoID: id) }
+        let sidecarNow = group.sidecarURLForWriting
+        let before = try (try? XMPDocument(data: Data(contentsOf: sidecarNow)).metadata) ?? index.metadata(ofPhoto: id)
         let metadata = try SidecarIO.write(changes, to: group)  // throws for malformed sidecars, never writes them
         let sidecar = group.sidecarURLForWriting
         let stamp = (try? fm.attributesOfItem(atPath: sidecar.path))?[.modificationDate] as? Date
@@ -154,32 +158,49 @@ public actor Library {
         ).map { StaleRevertGuard.Pending(field: $0["field"], value: $0["value"], previous: $0["previous"]) }
     }
 
-    /// For photos whose sidecar was just re-read from disk: when LightCraft was the writer, restore Loupe's
-    /// pending edits it reverted. Other writers win and leave the entries alone.
+    /// For photos whose sidecar changed on disk behind Loupe's back. LightCraft (also when merging into a sidecar
+    /// Loupe created) gets its stale reverts restored; for any other writer disk wins and entries that no longer
+    /// match are dropped.
     private func guardAgainstStaleRevert(photoIDs: [Int64]) async {
-        for id in photoIDs {
-            do {
-                let pending = try await index.dbPool.read { try Self.pendingEntries($0, photoID: id) }
-                guard !pending.isEmpty else { continue }
-                let group = try index.groupFiles(ofPhoto: id, root: location.rootURL)
-                guard let sidecar = group.sidecar,
-                    try XMPDocument(data: Data(contentsOf: sidecar)).writerToolkit == "LightCraft"
-                else { continue }
-                let result = StaleRevertGuard.evaluate(pending, current: try index.metadata(ofPhoto: id))
+        for id in photoIDs { await guardOne(photoID: id) }
+    }
+
+    private func guardIfSidecarChangedSinceStamp(photoID id: Int64) async {
+        guard let photo = try? index.photo(id: id),
+            let group = try? index.groupFiles(ofPhoto: id, root: location.rootURL), let sidecar = group.sidecar,
+            let disk = (try? FileManager.default.attributesOfItem(atPath: sidecar.path))?[.modificationDate] as? Date,
+            !LoupeIndex.Scanner.sameStamp(photo.sidecarModified, disk)
+        else { return }
+        await guardOne(photoID: id)
+    }
+
+    private func guardOne(photoID id: Int64) async {
+        do {
+            let pending = try await index.dbPool.read { try Self.pendingEntries($0, photoID: id) }
+            guard !pending.isEmpty else { return }
+            let group = try index.groupFiles(ofPhoto: id, root: location.rootURL)
+            guard let sidecar = group.sidecar else { return }
+            let doc = try XMPDocument(data: Data(contentsOf: sidecar))
+            let resolved: [StaleRevertGuard.Pending]
+            if StaleRevertGuard.isLightCraft(doc) {
+                let result = StaleRevertGuard.evaluate(pending, current: doc.metadata)
                 if !result.corrections.isEmpty {
                     try await applyOne(result.corrections, to: id, track: false)
                     for change in result.corrections { log("Restored \(Self.fieldName(change)) after LightCraft overwrote it") }
                 }
-                if !result.resolved.isEmpty {
-                    try await index.dbPool.write { db in
-                        for p in result.resolved {
-                            try db.execute(sql: "DELETE FROM pending_edit WHERE photoId = ? AND field = ?", arguments: [id, p.field])
-                        }
+                resolved = result.resolved
+            } else {
+                resolved = StaleRevertGuard.resolvedByOtherWriter(pending, current: doc.metadata)
+            }
+            if !resolved.isEmpty {
+                try await index.dbPool.write { db in
+                    for p in resolved {
+                        try db.execute(sql: "DELETE FROM pending_edit WHERE photoId = ? AND field = ?", arguments: [id, p.field])
                     }
                 }
-            } catch {
-                log("Stale-revert check failed for photo \(id): \(error)")
             }
+        } catch {
+            log("Stale-revert check failed for photo \(id): \(error)")
         }
     }
 
@@ -258,12 +279,14 @@ public actor Library {
             }
 
             var scanned = Set<Int64>()
+            var sidecarChanged = Set<Int64>()
             var unscannedInFolders = Set<Int64>()
             if rescanAll {
                 do {
                     let report = try await scanner.fullScan()
                     logFailed(report)
                     scanned.formUnion(report.scannedPhotoIDs)
+                    sidecarChanged.formUnion(report.sidecarChangedPhotoIDs)
                 } catch { logScanFailure(error) }
             } else {
                 for rel in relFolders.sorted() {
@@ -271,6 +294,7 @@ public actor Library {
                         let report = try await scanner.rescan(folder: rel)
                         logFailed(report)
                         scanned.formUnion(report.scannedPhotoIDs)
+                        sidecarChanged.formUnion(report.sidecarChangedPhotoIDs)
                     } catch { logScanFailure(error) }
                     // Store-side edits (e.g. Finder tags) do not change the files the scanner compares.
                     let key = rel.precomposedStringWithCanonicalMapping
@@ -281,7 +305,7 @@ public actor Library {
                     unscannedInFolders.formUnion(ids)
                 }
             }
-            await guardAgainstStaleRevert(photoIDs: scanned.sorted())
+            await guardAgainstStaleRevert(photoIDs: sidecarChanged.sorted())
             for id in scanned.sorted() { await syncStores(photoID: id, pushIfUnchanged: true) }
             for id in unscannedInFolders.subtracting(scanned).sorted() {
                 await syncStores(photoID: id, pushIfUnchanged: false)
