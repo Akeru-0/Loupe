@@ -14,7 +14,8 @@ public enum TestImages {
         exif: [CFString: Any] = [:],
         tiff: [CFString: Any] = [:],
         gps: Bool = false,
-        embeddedXMP: (rating: Int, subjects: [String])? = nil
+        embeddedXMP: (rating: Int, subjects: [String])? = nil,
+        creatorTool: String? = nil
     ) throws {
         guard let ctx = CGContext(
             data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
@@ -42,7 +43,8 @@ public enum TestImages {
             ] as [CFString: Any]
         }
 
-        if let xmp = embeddedXMP {
+        if embeddedXMP != nil || creatorTool != nil {
+            let xmp = embeddedXMP ?? (rating: 0, subjects: [])
             let metadata = CGImageMetadataCreateMutable()
             let rating = CGImageMetadataTagCreate(
                 kCGImageMetadataNamespaceXMPBasic, kCGImageMetadataPrefixXMPBasic,
@@ -59,6 +61,13 @@ public enum TestImages {
                     "subject" as CFString, .arrayUnordered, subjects as CFArray),
                 CGImageMetadataSetTagWithPath(metadata, nil, "dc:subject" as CFString, bag)
             else { throw TestImageError(message: "cannot build XMP metadata") }
+            if let creatorTool {
+                guard let tool = CGImageMetadataTagCreate(
+                    kCGImageMetadataNamespaceXMPBasic, kCGImageMetadataPrefixXMPBasic,
+                    "CreatorTool" as CFString, .string, creatorTool as CFString),
+                    CGImageMetadataSetTagWithPath(metadata, nil, "xmp:CreatorTool" as CFString, tool)
+                else { throw TestImageError(message: "cannot build XMP metadata") }
+            }
             CGImageDestinationAddImageAndMetadata(dest, image, metadata, props as CFDictionary)
         } else {
             CGImageDestinationAddImage(dest, image, props as CFDictionary)
