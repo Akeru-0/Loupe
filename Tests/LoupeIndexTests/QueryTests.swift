@@ -146,4 +146,31 @@ private func utc() -> (Calendar, Locale) {
         let s2 = try await it.next()
         #expect(Set(s2?.flatMap(\.photoIDs) ?? []) == [first, second])
     }
+
+    @Test func observationSkipsIdenticalEmissions() async throws {
+        let i = try makeIndex()
+        let first = try insert(i, "", "one")
+        let stream = i.observeSections(for: PhotoQuery())
+        let reader = Task { () -> [[Int64]] in
+            var seen: [[Int64]] = []
+            do {
+                for try await s in stream {
+                    seen.append(s.flatMap(\.photoIDs))
+                    if seen.count == 2 { break }
+                }
+            } catch {}
+            return seen
+        }
+        let watchdog = Task { try await Task.sleep(for: .seconds(5)); reader.cancel() }
+        try await Task.sleep(for: .milliseconds(300))
+        // Writes that leave the result unchanged must not emit.
+        try await i.dbPool.write { try $0.execute(sql: "INSERT INTO photo_tag VALUES (?, 'x')", arguments: [first]) }
+        try await i.dbPool.write { try $0.execute(sql: "UPDATE photo SET captureDate = captureDate, addedDate = addedDate WHERE id = ?", arguments: [first]) }
+        let second = try insert(i, "", "two")
+        let seen = await reader.value
+        watchdog.cancel()
+        #expect(seen.count == 2)
+        #expect(seen.first == [first])
+        #expect(Set(seen.last ?? []) == [first, second])
+    }
 }

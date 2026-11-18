@@ -18,7 +18,7 @@ extension LibraryIndex {
         return AsyncThrowingStream { continuation in
             let observation = ValueObservation.tracking { db in
                 try Self.fetchRows(db: db, query: query, now: .now)
-            }
+            }.removeDuplicates()
             let task = Task {
                 do {
                     for try await rows in observation.values(in: pool) {
@@ -51,7 +51,7 @@ extension LibraryIndex {
 
     // MARK: SQL
 
-    struct Row: Sendable { var id: Int64; var captureDate: Date? }
+    struct Row: Sendable, Equatable { var id: Int64; var captureDate: Date? }
 
     static func escapeLike(_ s: String) -> String {
         s.replacingOccurrences(of: "\\", with: "\\\\")
