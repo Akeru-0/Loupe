@@ -76,6 +76,7 @@ public actor Library {
             var report = ScanReport()
             do { report = try await scanner.fullScan() } catch { logScanFailure(error) }
             logFailed(report)
+            await guardAgainstStaleRevert(photoIDs: report.scannedPhotoIDs)
             for id in ((try? index.allPhotos()) ?? []).compactMap(\.id) {
                 await syncStores(photoID: id, pushIfUnchanged: true)
             }
@@ -102,7 +103,8 @@ public actor Library {
         return errors
     }
 
-    private func applyOne(_ changes: [MetadataChange], to id: Int64) async throws {
+    /// `track: false` is for the stale-revert guard's own corrections, which must not create new pending entries.
+    private func applyOne(_ changes: [MetadataChange], to id: Int64, track: Bool = true) async throws {
         let root = location.rootURL
         let group = try index.groupFiles(ofPhoto: id, root: root)
         let fm = FileManager.default
@@ -110,6 +112,7 @@ public actor Library {
         // A photo whose files are all gone must not get a fresh sidecar; the next scan removes it.
         guard !mediaURLs.isEmpty else { throw CocoaError(.fileNoSuchFile) }
 
+        let before = try index.metadata(ofPhoto: id)
         let metadata = try SidecarIO.write(changes, to: group)  // throws for malformed sidecars, never writes them
         let sidecar = group.sidecarURLForWriting
         let stamp = (try? fm.attributesOfItem(atPath: sidecar.path))?[.modificationDate] as? Date
@@ -126,8 +129,67 @@ public actor Library {
             for a in metadata.albums {
                 try db.execute(sql: "INSERT OR IGNORE INTO photo_album(photoId, name) VALUES (?, ?)", arguments: [id, a])
             }
+            if track {
+                let new = StaleRevertGuard.pending(for: changes, before: before)
+                if !new.isEmpty {
+                    let existing = try Self.pendingEntries(db, photoID: id)
+                    let merged = StaleRevertGuard.merge(existing, with: new)
+                    try db.execute(sql: "DELETE FROM pending_edit WHERE photoId = ?", arguments: [id])
+                    for p in merged {
+                        try db.execute(
+                            sql: "INSERT INTO pending_edit(photoId, field, value, previous) VALUES (?, ?, ?, ?)",
+                            arguments: [id, p.field, p.value, p.previous])
+                    }
+                }
+            }
         }
         try await pushToStores(metadata, photoID: id, files: mediaURLs)
+    }
+
+    // MARK: - LightCraft stale-revert guard
+
+    private static func pendingEntries(_ db: Database, photoID: Int64) throws -> [StaleRevertGuard.Pending] {
+        try Row.fetchAll(
+            db, sql: "SELECT field, value, previous FROM pending_edit WHERE photoId = ? ORDER BY field", arguments: [photoID]
+        ).map { StaleRevertGuard.Pending(field: $0["field"], value: $0["value"], previous: $0["previous"]) }
+    }
+
+    /// For photos whose sidecar was just re-read from disk: when LightCraft was the writer, restore Loupe's
+    /// pending edits it reverted. Other writers win and leave the entries alone.
+    private func guardAgainstStaleRevert(photoIDs: [Int64]) async {
+        for id in photoIDs {
+            do {
+                let pending = try await index.dbPool.read { try Self.pendingEntries($0, photoID: id) }
+                guard !pending.isEmpty else { continue }
+                let group = try index.groupFiles(ofPhoto: id, root: location.rootURL)
+                guard let sidecar = group.sidecar,
+                    try XMPDocument(data: Data(contentsOf: sidecar)).writerToolkit == "LightCraft"
+                else { continue }
+                let result = StaleRevertGuard.evaluate(pending, current: try index.metadata(ofPhoto: id))
+                if !result.corrections.isEmpty {
+                    try await applyOne(result.corrections, to: id, track: false)
+                    for change in result.corrections { log("Restored \(Self.fieldName(change)) after LightCraft overwrote it") }
+                }
+                if !result.resolved.isEmpty {
+                    try await index.dbPool.write { db in
+                        for p in result.resolved {
+                            try db.execute(sql: "DELETE FROM pending_edit WHERE photoId = ? AND field = ?", arguments: [id, p.field])
+                        }
+                    }
+                }
+            } catch {
+                log("Stale-revert check failed for photo \(id): \(error)")
+            }
+        }
+    }
+
+    private static func fieldName(_ change: MetadataChange) -> String {
+        switch change {
+        case .setRating: "rating"
+        case .setFavorite: "favorite"
+        case .addTag(let t), .removeTag(let t): "tag \(t)"
+        case .addToAlbum(let a), .removeFromAlbum(let a): "album \(a)"
+        }
     }
 
     // MARK: - Metadata stores
@@ -219,6 +281,7 @@ public actor Library {
                     unscannedInFolders.formUnion(ids)
                 }
             }
+            await guardAgainstStaleRevert(photoIDs: scanned.sorted())
             for id in scanned.sorted() { await syncStores(photoID: id, pushIfUnchanged: true) }
             for id in unscannedInFolders.subtracting(scanned).sorted() {
                 await syncStores(photoID: id, pushIfUnchanged: false)

@@ -57,6 +57,17 @@ enum Schema {
                 );
                 """)
         }
+        migrator.registerMigration("v2") { db in
+            try db.execute(sql: """
+                CREATE TABLE pending_edit (
+                    photoId INTEGER NOT NULL REFERENCES photo(id) ON DELETE CASCADE,
+                    field TEXT NOT NULL,
+                    value TEXT NOT NULL,
+                    previous TEXT NOT NULL,
+                    PRIMARY KEY (photoId, field)
+                );
+                """)
+        }
         return migrator
     }
 }

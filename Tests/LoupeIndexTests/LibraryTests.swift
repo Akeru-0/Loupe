@@ -144,3 +144,88 @@ private struct Env {
         #expect(try e.library.index.photo(key: "a/IMG_1") != nil)
     }
 }
+
+@Suite(.serialized) final class StaleRevertGuardLibraryTests {
+    private func sidecar(toolkit: String, rating: Int) -> Data {
+        Data("""
+        <?xpacket begin="" id="W5M0MpCehiHzreSzNTczkc9d"?>
+        <x:xmpmeta xmlns:x="adobe:ns:meta/" x:xmptk="\(toolkit)">
+         <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+          <rdf:Description rdf:about="" xmlns:xmp="http://ns.adobe.com/xap/1.0/">
+           <xmp:Rating>\(rating)</xmp:Rating>
+          </rdf:Description>
+         </rdf:RDF>
+        </x:xmpmeta>
+        <?xpacket end="w"?>
+        """.utf8)
+    }
+
+    /// A real external write lands well after Loupe's own; keep the mtime clear of the scanner's 1 ms tolerance.
+    nonisolated(unsafe) private var clock = 10.0
+    private func writeLater(_ e: Env, toolkit: String, rating: Int) throws {
+        let url = e.lib.url("a/IMG_1.xmp")
+        try sidecar(toolkit: toolkit, rating: rating).write(to: url, options: .atomic)
+        try FileManager.default.setAttributes([.modificationDate: Date().addingTimeInterval(clock)], ofItemAtPath: url.path)
+        clock += 10
+    }
+
+    private final class Logs: @unchecked Sendable {
+        private let lock = NSLock()
+        private var _messages: [String] = []
+        private var token: (any NSObjectProtocol)?
+        init() {
+            token = NotificationCenter.default.addObserver(forName: Library.didLog, object: nil, queue: nil) { [self] n in
+                lock.lock(); _messages.append(n.userInfo?["message"] as? String ?? ""); lock.unlock()
+            }
+        }
+        deinit { if let token { NotificationCenter.default.removeObserver(token) } }
+        var restored: [String] { lock.lock(); defer { lock.unlock() }; return _messages.filter { $0.hasPrefix("Restored") } }
+    }
+
+    /// Loupe applies rating 4, then `toolkit` writes rating 0 to the sidecar; returns the env after the rescan.
+    private func run(toolkit: String, rewrite: Int = 0) async throws -> (Env, Int64, Logs) {
+        let e = try Env()
+        try e.lib.addJPEG("a/IMG_1.jpg")
+        _ = await e.library.initialSync()
+        let id = try e.id("a/IMG_1")
+        _ = await e.library.apply([.setRating(4)], to: [id])
+        let logs = Logs()
+        try writeLater(e, toolkit: toolkit, rating: rewrite)
+        await e.library.handleFolderChanges([e.lib.url("a")], rescanAll: false)
+        return (e, id, logs)
+    }
+
+    @Test func libraryRestoresOnlyAfterLightCraftWrites() async throws {
+        let (e, id, logs) = try await run(toolkit: "LightCraft")
+        #expect(try e.sidecarText("a/IMG_1.xmp").contains("<xmp:Rating>4</xmp:Rating>"))
+        #expect(try e.library.index.photo(id: id)?.rating == 4)
+        #expect(logs.restored.count == 1)
+        #expect(logs.restored.first?.contains("rating") == true)
+
+        let (o, oid, otherLogs) = try await run(toolkit: "Other")
+        #expect(try o.library.index.photo(id: oid)?.rating == 0)
+        #expect(otherLogs.restored.isEmpty)
+    }
+
+    @Test func correctionDoesNotLoopAndStaysArmed() async throws {
+        let (e, id, logs) = try await run(toolkit: "LightCraft")
+        await e.library.handleFolderChanges([e.lib.url("a")], rescanAll: false)
+        await e.library.handleFolderChanges([e.lib.root], rescanAll: true)
+        #expect(logs.restored.count == 1)
+        // LightCraft reverts again on its next save: restored again.
+        try writeLater(e, toolkit: "LightCraft", rating: 0)
+        await e.library.handleFolderChanges([e.lib.url("a")], rescanAll: false)
+        #expect(try e.library.index.photo(id: id)?.rating == 4)
+        #expect(logs.restored.count == 2)
+    }
+
+    @Test func differentLightCraftValueWinsAndEntryIsDropped() async throws {
+        let (e, id, logs) = try await run(toolkit: "LightCraft", rewrite: 2)
+        #expect(try e.library.index.photo(id: id)?.rating == 2)
+        #expect(logs.restored.isEmpty)
+        // Entry is gone: a later stale 0 is not restored.
+        try writeLater(e, toolkit: "LightCraft", rating: 0)
+        await e.library.handleFolderChanges([e.lib.url("a")], rescanAll: false)
+        #expect(try e.library.index.photo(id: id)?.rating == 0)
+    }
+}
