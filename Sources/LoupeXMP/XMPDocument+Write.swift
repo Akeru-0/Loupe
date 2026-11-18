@@ -148,23 +148,30 @@ private struct Editor {
     }
 
     /// Removes matching items; a property whose list becomes empty because of this is removed too.
-    private func remove(_ matches: (String) -> Bool, _ uri: String, _ local: String) {
+    @discardableResult
+    private func remove(_ matches: (String) -> Bool, _ uri: String, _ local: String) -> Int {
+        var count = 0
         for p in properties(uri, local) {
             guard let c = container(of: p) else { continue }
             var removed = false
             for li in items(of: c) where matches(li.stringValue ?? "") {
                 detach(li)
                 removed = true
+                count += 1
             }
             if removed && items(of: c).isEmpty { detach(p) }
         }
+        return count
     }
 
     private func removeAlbum(_ name: String) {
         let key = XMPDocument.key(name)
         let path = Keywords.albumPrefix.lowercased()
-        remove({ XMPDocument.key($0) == XMPDocument.key(Keywords.albumPrefix + name) }, dc, "subject")
-        remove({ XMPDocument.key($0) == XMPDocument.key(Keywords.albumPrefix + name) }, lr, "hierarchicalSubject")
+        let full = XMPDocument.key(Keywords.albumPrefix + name)
+        let removedAlbum = remove({ XMPDocument.key($0) == full }, dc, "subject")
+            + remove({ XMPDocument.key($0) == full }, lr, "hierarchicalSubject")
+        // Without the album entry, a flat `<name>` item is a real user tag; leave it alone.
+        guard removedAlbum > 0 else { return }
         // LightCraft also writes the path split into flat items: `Albums` and `<name>`.
         remove({ XMPDocument.key($0) == key }, dc, "subject")
         let anyAlbumLeft = [(dc, "subject"), (lr, "hierarchicalSubject")].contains { uri, local in

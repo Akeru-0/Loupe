@@ -139,6 +139,25 @@ private func tagStrings(_ tag: CGImageMetadataTag) -> [String] {
         #expect(try lcSettings(out) == lcSettings(input))
     }
 
+    @Test func removeAlbumKeepsSameNamedTagWhenNoAlbum() throws {
+        var doc = XMPDocument.empty()
+        doc.apply([.addTag("Iceland")])
+        doc.apply([.removeFromAlbum("Iceland")])
+        #expect(doc.metadata.tags == ["Iceland"])
+
+        let dir = try tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let sidecar = dir.appendingPathComponent("IMG_1.xmp")
+        try doc.serialized().write(to: sidecar)
+        let old = Date(timeIntervalSince1970: 1_000_000_000)
+        try FileManager.default.setAttributes([.modificationDate: old], ofItemAtPath: sidecar.path)
+        let bytes = try Data(contentsOf: sidecar)
+        let m = try SidecarIO.write([.removeFromAlbum("Iceland")], to: group(in: dir, sidecar: sidecar))
+        #expect(m.tags == ["Iceland"])
+        #expect(try Data(contentsOf: sidecar) == bytes)
+        #expect(try FileManager.default.attributesOfItem(atPath: sidecar.path)[.modificationDate] as? Date == old)
+    }
+
     @Test func malformedSidecarIsNeverOverwritten() throws {
         let dir = try tempDir()
         defer { try? FileManager.default.removeItem(at: dir) }
