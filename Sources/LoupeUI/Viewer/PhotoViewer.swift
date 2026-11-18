@@ -83,7 +83,7 @@ import SwiftUI
         photoID = nil
     }
 
-    func close() { app.viewerPhotoID = nil }
+    func close() { app.closeViewer() }
 
     // MARK: - Photo
 
@@ -378,7 +378,7 @@ import SwiftUI
             let i = order.firstIndex(of: id) ?? 0
             let next = order[min(i + 1, order.count)...].first { !gone.contains($0) }
                 ?? order[..<min(i, order.count)].last { !gone.contains($0) }
-            self.app.viewerPhotoID = next
+            if let next { self.app.viewerPhotoID = next } else { self.app.closeViewer() }
         }
     }
 

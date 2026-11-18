@@ -38,6 +38,40 @@ extension LibraryIndex {
         Set(try distinct("SELECT DISTINCT name FROM photo_album"))
     }
     public func folderPaths() throws -> [String] { try distinct("SELECT DISTINCT folderPath FROM photo ORDER BY folderPath") }
+    /// Photos per folder path (NFC), counting only each folder's own photos.
+    public func directMediaCounts() throws -> [String: Int] {
+        try dbPool.read { db in
+            var counts: [String: Int] = [:]
+            for row in try GRDB.Row.fetchAll(db, sql: "SELECT folderPath, COUNT(*) AS n FROM photo GROUP BY folderPath") {
+                counts[row["folderPath"]] = row["n"]
+            }
+            return counts
+        }
+    }
+
+    /// The album tree: the real folders under `root` (empty ones too; hidden, package and excluded folders
+    /// skipped, as the scanner skips them) with this index's photo counts. Reads the disk: call off the main thread.
+    public func albumTree(root: URL, settings: LibrarySettings) throws -> [AlbumNode] {
+        let counts = try directMediaCounts()
+        var folders: [FolderInfo] = []
+        func walk(_ folder: URL, path: [String]) -> Bool {
+            let urls = (try? FileManager.default.contentsOfDirectory(
+                at: folder, includingPropertiesForKeys: [.isDirectoryKey, .isPackageKey], options: [.skipsHiddenFiles])) ?? []
+            let subfolders = urls
+                .filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true }
+                .filter { !LoupeIndex.Scanner.ignores(folder: $0, settings: settings) }
+            for url in subfolders {
+                let components = path + [url.lastPathComponent]
+                let key = components.joined(separator: "/").precomposedStringWithCanonicalMapping
+                let hasSubfolders = walk(url, path: components)
+                folders.append(FolderInfo(path: key, directMediaCount: counts[key] ?? 0, hasSubfolders: hasSubfolders))
+            }
+            return !subfolders.isEmpty
+        }
+        _ = walk(root, path: [])
+        return AlbumTree.build(folders)
+    }
+
     public func cameras() throws -> [String] {
         try distinct("SELECT DISTINCT cameraModel FROM photo WHERE cameraModel IS NOT NULL ORDER BY cameraModel")
     }
@@ -78,6 +112,12 @@ extension LibraryIndex {
         case .folder(let path):
             clauses.append("p.folderPath = ?")
             args.append(path.precomposedStringWithCanonicalMapping)
+        case .unsorted:
+            clauses.append("p.folderPath = ''")
+        case .folderTree(let path):
+            let key = path.precomposedStringWithCanonicalMapping
+            clauses.append("(p.folderPath = ? OR p.folderPath LIKE ? ESCAPE '\\')")
+            args.append(contentsOf: [key, escapeLike(key) + "/%"])
         }
 
         let text = q.searchText.trimmingCharacters(in: .whitespacesAndNewlines)

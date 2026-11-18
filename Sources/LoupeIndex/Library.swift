@@ -339,6 +339,56 @@ public actor Library {
         }
     }
 
+    /// Delete Album: the album's own photos move to the root (Unsorted) with all their files, then the folder is
+    /// removed if nothing is left in it but `.DS_Store`. Subfolders (or other files) keep the folder in place.
+    /// Nothing is ever trashed, and the root, missing or ignored folders are left alone.
+    public func deleteAlbum(_ path: String) async -> [Int64: any Error] {
+        await serialized { await deleteAlbumLocked(path) }
+    }
+
+    private func deleteAlbumLocked(_ path: String) async -> [Int64: any Error] {
+        let root = location.rootURL
+        let given = path.split(separator: "/").map(String.init)
+        guard !given.isEmpty, !given.contains(where: { $0 == "." || $0 == ".." }),
+            let (components, folderURL) = try? LoupeIndex.Scanner.resolveOnDisk(given, under: root),
+            !scanner.isIgnored(components, under: root)
+        else { return [:] }
+        let key = components.joined(separator: "/").precomposedStringWithCanonicalMapping
+        await rescanFolders([key])  // photos added since the last watcher event go too
+        let ids: [Int64]
+        do {
+            ids = try await photoIDs(inFolder: key)
+        } catch {
+            log("Could not delete the album \(key): \(error.localizedDescription)")
+            return [:]
+        }
+        let errors = await moveLocked(ids, toFolder: "")
+        removeFolderIfEmpty(folderURL, path: key)
+        return errors
+    }
+
+    /// Photos directly in `folder` (an NFC folder key).
+    private func photoIDs(inFolder folder: String) async throws -> [Int64] {
+        let locationID = location.id
+        return try await index.dbPool.read { db in
+            try Int64.fetchAll(
+                db, sql: "SELECT id FROM photo WHERE locationId = ? AND folderPath = ? ORDER BY id",
+                arguments: [locationID, folder])
+        }
+    }
+
+    private func removeFolderIfEmpty(_ url: URL, path: String) {
+        let fm = FileManager.default
+        guard let names = try? fm.contentsOfDirectory(atPath: url.path) else { return }
+        guard names.allSatisfy({ $0 == ".DS_Store" }) else {
+            log("Kept the folder \(path): it still holds subfolders or other files")
+            return
+        }
+        for name in names { try? fm.removeItem(at: url.appendingPathComponent(name)) }
+        // rmdir only removes an empty folder, so a file that arrived meanwhile keeps it.
+        if rmdir(url.path) != 0 { log("Could not remove the folder \(path): \(String(cString: strerror(errno)))") }
+    }
+
     /// Creates `name` inside `inFolder` and returns its root-relative path. Refuses existing names (case-insensitive).
     public func createFolder(named name: String, inFolder: String) async throws -> String {
         let result: Result<String, any Error> = await serialized {

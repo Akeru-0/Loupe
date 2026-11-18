@@ -10,6 +10,12 @@ import Observation
     /// Dragged photos: each pasteboard item carries one photo's id as a decimal string, next to its file URL.
     static let photoIDsType = NSPasteboard.PasteboardType("local.loupe.photo-ids")
 
+    /// The photo ids of a drag from the grid, in order and without repeats; empty for anything else (Finder files).
+    static func photoIDs(in items: [NSPasteboardItem]) -> [Int64] {
+        var seen: Set<Int64> = []
+        return items.compactMap { $0.string(forType: photoIDsType).flatMap { Int64($0) } }.filter { seen.insert($0).inserted }
+    }
+
     private let model: AppModel
     private let collectionView = GridCollectionView()
     private var dataSource: NSCollectionViewDiffableDataSource<String, Int64>!
@@ -29,8 +35,6 @@ import Observation
     private var focusID: Int64?
     private var anchorID: Int64?
     private var magnification: CGFloat = 0
-    /// The photo the viewer shows; when the viewer closes it is selected and scrolled into view.
-    private var viewerPhotoID: Int64?
     private var changeObserver: (any NSObjectProtocol)?
 
     init(model: AppModel) {
@@ -130,8 +134,8 @@ import Observation
             scheduleRefresh(full: false)
         }
         if model.columns != columns { applyColumns(model.columns) }
-        let closedViewerPhoto = model.viewerPhotoID == nil ? viewerPhotoID : nil
-        viewerPhotoID = model.viewerPhotoID
+        // Only the viewer closing itself hands its photo back; programmatic resets leave selection and focus alone.
+        let closedViewerPhoto = model.viewerPhotoID == nil ? model.takeClosedViewerPhoto() : nil
         if let id = closedViewerPhoto, dataSource.indexPath(for: id) != nil, model.selection != [id] {
             model.selection = [id]
         }
@@ -311,7 +315,7 @@ import Observation
         case .toggleViewer: toggleViewer()
         case .closeViewer:
             guard model.viewerPhotoID != nil else { return false }
-            model.viewerPhotoID = nil
+            model.closeViewer()
         case .zoomIn: zoom(by: -1)
         case .zoomOut: zoom(by: 1)
         case .previous, .next: return false
@@ -350,7 +354,7 @@ import Observation
 
     private func toggleViewer() {
         if model.viewerPhotoID != nil {
-            model.viewerPhotoID = nil
+            model.closeViewer()
         } else if let id = focusID.flatMap({ model.selection.contains($0) ? $0 : nil }) ?? orderedSelection().first {
             model.viewerPhotoID = id
         }
@@ -451,7 +455,8 @@ import Observation
         Self.presentErrors(errors, title, names: names, model: model)
     }
 
-    private static func presentErrors(_ errors: [Int64: any Error], _ title: String, names: [Int64: String], model: AppModel) {
+    /// One alert for per-photo errors, naming each photo (at most ten). Shared with the organising commands.
+    static func presentErrors(_ errors: [Int64: any Error], _ title: String, names: [Int64: String], model: AppModel) {
         guard !errors.isEmpty else { return }
         let lines = errors.sorted { $0.key < $1.key }.prefix(10).map { id, error in
             "\(names[id] ?? "Photo \(id)"): \(error.localizedDescription)"
@@ -480,14 +485,15 @@ import Observation
             anchorID = id
             selectionDidChange()
         }
-        let groups = actionEntries()
-        guard !groups.isEmpty else { return nil }
+        let ids = orderedSelection()
+        guard !ids.isEmpty, library != nil else { return nil }
         let menu = NSMenu()
         menu.autoenablesItems = false
-        for (i, group) in groups.enumerated() {
-            if i > 0 { menu.addItem(.separator()) }
+        for group in actionEntries() {
             for entry in group { menu.addItem(menuItem(entry)) }
+            menu.addItem(.separator())
         }
+        for item in AlbumMenu.items(for: ids, model: model) { menu.addItem(item) }
         return menu
     }
 

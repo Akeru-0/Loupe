@@ -26,8 +26,10 @@ albums, people) survives outside the app.
 3. **Edit in…** opens the selected version in a chosen external editor, in one
    click.
 4. **Share** with compression presets.
-5. Organise two ways: **physical folders** (move/rename real files) and
-   **virtual albums + tags** (files stay put).
+5. Organise with **albums that are real folders** (adding to an album moves the
+   files) and **tags** (files stay put).
+   *Superseded 2026-11-18 (owner decision): was "physical folders and virtual
+   albums + tags (files stay put)", decision #6.*
 6. Metadata stored in **XMP sidecars**, mirrored to **Finder tags**.
 7. **SD card / camera import** like Photos.
 8. **Local face recognition** with a People view.
@@ -100,19 +102,32 @@ rejected: it can't match the native look or RAW performance.
   other), size and dimensions.
 - **Display version** (default): newest Edit, else JPEG/HEIC, else RAW.
 - **Capture date** comes from EXIF, falling back to file creation date.
+- **Album**: a folder under the root that directly contains photos or videos.
+  An empty folder is an album too, so New Album creates one. A photo is in
+  exactly one album; adding it to an album, or dropping it on one, moves all its
+  files (versions and sidecars). The root is never an album.
+- **Group**: a folder with no photos of its own but with subfolders (e.g. `2026`
+  holding `Iceland 2026`). It expands in the sidebar and shows every photo below
+  it. An album may have subfolders too.
+- **Unsorted**: the photos loose in the root. Delete Album moves an album's
+  photos here and removes the folder only if nothing else is left in it
+  (subfolders stay); nothing is trashed.
 
 ### Source of truth vs cache
 
 | Data | Source of truth | Mirror / cache |
 |---|---|---|
-| Rating, tags, albums | XMP sidecar `<basename>.xmp` (one per photo) | Finder tags (tags + rating as "★3"); SQLite |
+| Rating, tags (and legacy keyword albums) | XMP sidecar `<basename>.xmp` (one per photo) | Finder tags (tags + rating as "★3"); SQLite |
 | Face regions + names | XMP, MWG Regions standard (`mwg-rs`) | SQLite |
 | Face embeddings | — | SQLite only (rebuildable) |
-| Album order, cover photo | `~/Pictures/.loupe/albums.json` (portable file next to the photos) | SQLite |
+| Album membership | The folder the files are in | SQLite |
+| Keyword-album order, cover photo (legacy) | `~/Pictures/.loupe/albums.json` (portable file next to the photos) | SQLite |
 | Thumbnails | — | `~/Library/Caches/Loupe` |
 
-**Albums** are XMP hierarchical keywords `Albums|<name>` (`lr:hierarchicalSubject`
-plus flat `dc:subject`). Tags are plain keywords.
+**Albums are folders** (above). Tags are plain keywords. *Keyword albums*,
+XMP hierarchical keywords `Albums|<name>` (`lr:hierarchicalSubject` plus flat
+`dc:subject`, e.g. from the Photos migration), are still read, preserved and
+indexed, but the UI no longer shows or writes them.
 
 **XMP write rule:** read-modify-write. The app edits only `xmp:Rating`,
 `dc:subject`, `lr:hierarchicalSubject` and `mwg-rs:Regions`; every other
@@ -180,21 +195,27 @@ embeddings, which are recomputed.
 │ Library          │                                                       │
 │ Favorites        │   ▢ ▢ ▢ ▢ ▢ ▢     grid; badges per photo:             │
 │ Recently Added   │   ▢ ▢ ▢ ▢ ▢ ▢     RAW  JPG  EDIT  ★  👤                │
+│ Unsorted         │                                                       │
 │ People           │                                                       │
-│ Albums ▸         │                                                       │
+│ Albums ▸ (tree)  │                                                       │
 │ Tags ▸           │                                                       │
-│ Folders ▸ (tree) │                                                       │
 │ Imports          │                                                       │
 └──────────────────┴───────────────────────────────────────────────────────┘
 ```
 
-- Library = everything, sorted by capture date. Folders = the real tree; drag and
-  drop moves real files (all versions + sidecar together).
+- Library = everything, sorted by capture date. Unsorted = photos loose in the
+  root. Albums = the real folder tree: albums (`rectangle.stack`) and groups
+  (`folder`, show everything below them). Dropping photos on an album or on
+  Unsorted moves the real files (all versions + sidecars together); groups take
+  no drops. Context menus: New Album…, Rename…, Delete Album… in the sidebar;
+  Add to Album ▸ and Move to Unsorted on photos.
+- Tag editor (⌘T): tokens for the selection's tags; tags on only some photos
+  are dimmed; adding or removing one changes every selected photo.
 - Sorting and filtering by date, rating, tag, camera, lens, file kind (e.g. "has
   RAW"), and people. Search across these fields.
 - Keyboard-first: arrows, space (viewer), 0–5 (rating), F (favorite), E (edit),
   ⌘⌫ (move to Trash).
-- Batch actions on a selection: rate, tag, add to album, move, share, script.
+- Batch actions on a selection: rate, tag, add to album (moves), share, script.
 
 ### Viewer + versions
 

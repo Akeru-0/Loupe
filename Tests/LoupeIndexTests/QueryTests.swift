@@ -59,6 +59,45 @@ private func utc() -> (Calendar, Locale) {
         _ = old
     }
 
+    @Test func unsortedScopeIsRootOnly() throws {
+        let i = try makeIndex()
+        let root = try insert(i, "", "r")
+        _ = try insert(i, "a", "x")
+        _ = try insert(i, "a/b", "y")
+        #expect(try ids(i, PhotoQuery(scope: .unsorted)) == [root])
+    }
+
+    @Test func folderTreeScopeIsRecursive() throws {
+        let i = try makeIndex()
+        let a = try insert(i, "2026/a", "a")
+        let c = try insert(i, "2026/b/c", "c")
+        _ = try insert(i, "2027/x", "x")
+        _ = try insert(i, "2026x/y", "y")  // a sibling sharing the prefix is not inside 2026
+        _ = try insert(i, "", "r")
+        func run(_ path: String) throws -> Set<Int64> { Set(try ids(i, PhotoQuery(scope: .folderTree(path)))) }
+        #expect(try run("2026") == [a, c])
+        #expect(try run("2026/b") == [c])
+        // LIKE wildcards in folder names are literal.
+        let underscore = try insert(i, "a_b/1", "u")
+        _ = try insert(i, "aXb/1", "v")
+        let percent = try insert(i, "100%", "p")
+        _ = try insert(i, "100x/1", "w")
+        #expect(try run("a_b") == [underscore])
+        #expect(try run("100%") == [percent])
+        // Stored paths are NFC; an NFD spelling finds them.
+        let z = try insert(i, "Žluť/1", "z")
+        #expect(try run("Z\u{30C}lut\u{30C}") == [z])
+    }
+
+    @Test func directMediaCountsPerFolder() throws {
+        let i = try makeIndex()
+        _ = try insert(i, "", "r")
+        _ = try insert(i, "a", "x")
+        _ = try insert(i, "a", "y")
+        _ = try insert(i, "a/b", "z")
+        #expect(try i.directMediaCounts() == ["": 1, "a": 2, "a/b": 1])
+    }
+
     @Test func searchMatchesNamesTagsAlbumsCameraLens() throws {
         let i = try makeIndex()
         let byStem = try insert(i, "", "IMG_1")

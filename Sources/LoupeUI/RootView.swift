@@ -32,6 +32,13 @@ public struct RootView: View {
         } message: { message in
             Text(message)
         }
+        .sheet(isPresented: Binding(
+            get: { model.tagEditorPhotoIDs != nil }, set: { if !$0 { model.tagEditorPhotoIDs = nil } }
+        )) {
+            if let ids = model.tagEditorPhotoIDs {
+                TagEditorView(model: model, photoIDs: ids) { model.tagEditorPhotoIDs = nil }
+            }
+        }
         .frame(minWidth: 900, minHeight: 600)
     }
 }
@@ -56,6 +63,12 @@ public struct LoupeCommands: Commands {
     public init(model: AppModel) { self.model = model }
 
     public var body: some Commands {
+        CommandGroup(after: .pasteboard) {
+            Divider()
+            Button("Edit Tags…") { model.editTags() }
+                .keyboardShortcut("t", modifiers: .command)
+                .disabled(!model.canEditTags)
+        }
         CommandGroup(after: .sidebar) {
             Toggle("Activity Log", isOn: $model.showsActivityLog)
                 .keyboardShortcut("l", modifiers: [.command, .option])

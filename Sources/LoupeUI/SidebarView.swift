@@ -6,9 +6,20 @@ struct SidebarView: View {
 
     var body: some View {
         List(selection: $model.selectedItemID) {
-            ForEach(model.sidebar.filter { !$0.items.isEmpty }) { group in
+            // Albums stays even when empty: its header's menu creates the first album.
+            ForEach(model.sidebar.filter { !$0.items.isEmpty || $0.id == "albums" }) { group in
                 if let title = group.title {
-                    Section(title) { rows(group.items) }
+                    Section {
+                        rows(group.items)
+                    } header: {
+                        if group.id == "albums" {
+                            Text(title).contextMenu {
+                                Button("New Album…") { Task { await model.newAlbum(in: "", select: true) } }
+                            }
+                        } else {
+                            Text(title)
+                        }
+                    }
                 } else {
                     Section { rows(group.items) }
                 }
@@ -23,6 +34,7 @@ struct SidebarView: View {
             Label(item.title, systemImage: item.systemImage)
                 .lineLimit(1)
                 .help(item.title)
+                .sidebarOrganizing(item, model: model)
         }
     }
 

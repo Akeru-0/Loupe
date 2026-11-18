@@ -10,6 +10,10 @@ public struct PhotoQuery: Hashable, Sendable {
         case tag(String)
         /// Non-recursive: photos whose folder path equals this one.
         case folder(String)
+        /// Photos loose in the library root.
+        case unsorted
+        /// Recursive: photos in this folder and in every folder below it (a group).
+        case folderTree(String)
     }
     public enum KindFilter: Hashable, Sendable { case any, hasRaw, withoutRaw, videos, lightCraftEdited }
     public enum SortField: Hashable, Sendable { case captureDate, added, name, rating }

@@ -59,7 +59,8 @@ public struct SidebarGroup: Identifiable, Sendable {
     public var selectedItemID: String? = "library" { didSet { selectedItemChanged() } }
     public var query = PhotoQuery() { didSet { if query != oldValue { observeQuery() } } }
     public var selection: Set<Int64> = []
-    public var viewerPhotoID: Int64?
+    /// The photo the viewer shows. Close the viewer with `closeViewer()`; setting nil directly is a reset.
+    public var viewerPhotoID: Int64? { didSet { closedViewerPhotoID = nil } }
     public var mode: BrowseMode = .all {
         didSet {
             query.grouping = mode.grouping
@@ -69,6 +70,8 @@ public struct SidebarGroup: Identifiable, Sendable {
     public var columns = 7
     public var showsActivityLog = false
     public var alertMessage: String?
+    /// The photos the tag editor (⌘T) is open for.
+    public var tagEditorPhotoIDs: [Int64]?
 
     public private(set) var sidebar: [SidebarGroup] = []
     public private(set) var photoSections: [PhotoSection] = []
@@ -89,6 +92,8 @@ public struct SidebarGroup: Identifiable, Sendable {
     @ObservationIgnored private var sidebarTask: Task<Void, Never>?
     @ObservationIgnored private var sidebarRefreshPending = false
     @ObservationIgnored private var observers: [any NSObjectProtocol] = []
+    /// Set by `closeViewer()`, taken once by the grid; any other change of `viewerPhotoID` clears it.
+    @ObservationIgnored private var closedViewerPhotoID: Int64?
 
     public init(
         preferences: any PreferenceStore = UserDefaultsStore.standard,
@@ -242,6 +247,22 @@ public struct SidebarGroup: Identifiable, Sendable {
         }
     }
 
+    // MARK: - Viewer
+
+    /// The viewer closing itself (Esc, Space, the close button): the grid then selects the photo it showed, scrolls
+    /// it into view and takes the keyboard back. Resets (another sidebar item, a reopened library) don't do that.
+    func closeViewer() {
+        guard let id = viewerPhotoID else { return }
+        viewerPhotoID = nil
+        closedViewerPhotoID = id
+    }
+
+    /// The photo the viewer closed on, once.
+    func takeClosedViewerPhoto() -> Int64? {
+        defer { closedViewerPhotoID = nil }
+        return closedViewerPhotoID
+    }
+
     private func selectedItemChanged() {
         guard let id = selectedItemID, let item = item(withID: id) else { return }
         selection = []
@@ -280,7 +301,12 @@ public struct SidebarGroup: Identifiable, Sendable {
             if gen == generation {
                 (sidebar, cameras, lenses) = (result.0, result.1, result.2)
                 for message in result.3 { log(message) }
-                if let id = selectedItemID, item(withID: id) == nil { selectedItemID = "library" }
+                if let id = selectedItemID, let item = item(withID: id) {
+                    // A renamed or new album selected before it was listed, or an album that became a group.
+                    if query.scope != item.scope { query.scope = item.scope }
+                } else if selectedItemID != nil, !sidebarRefreshPending {
+                    selectedItemID = "library"
+                }
             }
             if sidebarRefreshPending {
                 sidebarRefreshPending = false

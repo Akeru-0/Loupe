@@ -34,47 +34,43 @@ import LoupeTestSupport
         var registry = FeatureRegistry()
         SidebarFeature.register(in: &registry)
         let sections = registry.sidebarSections.sorted { $0.order < $1.order }
-        #expect(sections.map(\.title) == [nil, "Albums", "Tags", "Folders"])
+        // Folders are albums now: no separate "Folders" section, no keyword albums.
+        #expect(sections.map(\.title) == [nil, "Albums", "Tags"])
         let items = try sections.map { try $0.items(index: index, root: lib.root, settings: settings) }
-        try #require(items.count == 4)
+        try #require(items.count == 3)
 
         let library = items[0]
-        #expect(library.map(\.title) == ["Library", "Favorites", "Recently Added"])
-        #expect(library.map(\.scope) == [.all, .favorites, .recentlyAdded(days: 30)])
-        #expect(library.map(\.systemImage) == ["photo.on.rectangle", "heart", "clock"])
-        #expect(library.allSatisfy { $0.dropTarget == nil && $0.children.isEmpty })
+        #expect(library.map(\.title) == ["Library", "Favorites", "Recently Added", "Unsorted"])
+        #expect(library.map(\.scope) == [.all, .favorites, .recentlyAdded(days: 30), .unsorted])
+        #expect(library.map(\.systemImage) == ["photo.on.rectangle", "heart", "clock", "tray"])
+        #expect(library.map(\.dropTarget) == [nil, nil, nil, .folder("")])
+        #expect(library.allSatisfy { $0.children.isEmpty })
 
-        // Every catalog album in catalog order (an empty one too), then the index's other albums alphabetically.
+        // The real folder tree: a folder with photos (or an empty one) is an album, a folder with only subfolders
+        // is a group. Hidden, package and excluded folders are skipped; ":" on disk shows as "/".
         let albums = items[1]
-        #expect(albums.map(\.title) == ["Zebra", "Gone", "Alpha", "Middle"])
-        #expect(albums.map(\.scope) == [.album("Zebra"), .album("Gone"), .album("Alpha"), .album("Middle")])
-        #expect(albums.map(\.dropTarget) == [.album("Zebra"), .album("Gone"), .album("Alpha"), .album("Middle")])
-        #expect(albums.allSatisfy { $0.systemImage == "rectangle.stack" })
+        #expect(albums.map(\.title) == ["Empty", "Screen shots/recording", "Trip"])
+        #expect(albums.map(\.scope) == [.folderTree("Empty"), .folder("Screen shots:recording"), .folder("Trip")])
+        #expect(albums.map(\.dropTarget) == [nil, .folder("Screen shots:recording"), .folder("Trip")])
+        #expect(albums.map(\.systemImage) == ["folder", "rectangle.stack", "rectangle.stack"])
+        try #require(albums.count == 3)
+        #expect(albums[0].children.map(\.title) == ["Nested"])
+        #expect(albums[0].children.map(\.scope) == [.folder("Empty/Nested")])
+        #expect(albums[0].children.map(\.dropTarget) == [.folder("Empty/Nested")])
+        #expect(albums[0].children.map(\.systemImage) == ["rectangle.stack"])
+        #expect(albums[1].children.isEmpty)
+        #expect(albums[2].children.map(\.title) == ["Day 1"])
+        #expect(albums[2].children.map(\.dropTarget) == [.folder("Trip/Day 1")])
 
         let tags = items[2]
         #expect(tags.map(\.title) == ["Beach", "Iceland"])
         #expect(tags.map(\.scope) == [.tag("Beach"), .tag("Iceland")])
         #expect(tags.allSatisfy { $0.systemImage == "tag" && $0.dropTarget == nil })
 
-        // The root (its own photos), then the real tree: empty folders included; hidden, package and excluded
-        // folders skipped; ":" on disk shows as "/".
-        let folders = items[3]
-        #expect(folders.map(\.title)
-            == [fm.displayName(atPath: lib.root.path), "Empty", "Screen shots/recording", "Trip"])
-        #expect(folders.map(\.scope)
-            == [.folder(""), .folder("Empty"), .folder("Screen shots:recording"), .folder("Trip")])
-        #expect(folders.map(\.dropTarget)
-            == [.folder(""), .folder("Empty"), .folder("Screen shots:recording"), .folder("Trip")])
-        try #require(folders.count == 4)
-        #expect(folders[0].children.isEmpty)
-        #expect(folders[1].children.map(\.title) == ["Nested"])
-        #expect(folders[1].children.map(\.scope) == [.folder("Empty/Nested")])
-        #expect(folders[3].children.map(\.title) == ["Day 1"])
-        #expect(folders[3].children.map(\.dropTarget) == [.folder("Trip/Day 1")])
-
         func flatten(_ items: [SidebarItem]) -> [SidebarItem] { items.flatMap { [$0] + flatten($0.children) } }
         let all = flatten(items.flatMap { $0 })
-        #expect(flatten(folders).allSatisfy { $0.systemImage == "folder" })
+        // Keyword albums ("Albums|…" in the sidecar, the catalog) stay in the files but are not shown.
+        #expect(!all.contains { ["Zebra", "Gone", "Alpha", "Middle"].contains($0.title) })
         #expect(Set(all.map(\.id)).count == all.count)
     }
 }
