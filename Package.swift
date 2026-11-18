@@ -18,6 +18,10 @@ let package = Package(
             name: "LoupeIndex",
             dependencies: ["LoupeCore", "LoupeXMP", "LoupeMedia", .product(name: "GRDB", package: "GRDB.swift")]
         ),
+        .target(
+            name: "LoupeFeatures",
+            dependencies: ["LoupeCore", "LoupeXMP", "LoupeMedia", "LoupeIndex"]
+        ),
         .target(name: "LoupeTestSupport", dependencies: ["LoupeCore"]),
         .executableTarget(
             name: "Loupe",
@@ -25,6 +29,7 @@ let package = Package(
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
         .testTarget(name: "LoupeCoreTests", dependencies: ["LoupeCore"]),
+        .testTarget(name: "LoupeFeaturesTests", dependencies: ["LoupeFeatures", "LoupeTestSupport"]),
         .testTarget(name: "LoupeIndexTests", dependencies: ["LoupeIndex", "LoupeTestSupport"]),
         .testTarget(name: "LoupeMediaTests", dependencies: ["LoupeMedia", "LoupeTestSupport"]),
         .testTarget(
