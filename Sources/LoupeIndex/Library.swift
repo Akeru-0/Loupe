@@ -1,3 +1,4 @@
+import CoreServices
 import CryptoKit
 import Foundation
 import GRDB
@@ -57,15 +58,16 @@ public actor Library {
 
     /// Scans, syncs the metadata stores, then starts watching the root.
     public func start() async -> ScanReport {
-        let report = await initialSync()
-        guard watcher == nil else { return report }
-        let w = FolderWatcher(root: location.rootURL) { [weak self] folders, all in
+        guard watcher == nil else { return await initialSync() }
+        // Events during the initial sync are replayed once; they queue behind it in the serial section.
+        let since = FSEventsGetCurrentEventId()
+        let w = FolderWatcher(root: location.rootURL, sinceWhen: since) { [weak self] folders, all in
             guard let self else { return }
             Task { await self.handleFolderChanges(folders, rescanAll: all) }
         }
         w.start()
         watcher = w
-        return report
+        return await initialSync()
     }
 
     /// The scan and store sync part of `start()`.

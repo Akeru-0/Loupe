@@ -8,13 +8,18 @@ public final class FolderWatcher: @unchecked Sendable {
 
     private let root: URL
     private let latency: TimeInterval
+    private let sinceWhen: FSEventStreamEventId?
     private let onChange: Handler
     private let lock = NSLock()
     private var stream: FSEventStreamRef?
     private let queue = DispatchQueue(label: "loupe.folderwatcher")
 
-    public init(root: URL, latency: TimeInterval = 0.3, onChange: @escaping Handler) {
+    /// `sinceWhen` replays events from that FSEvents id (see `FSEventsGetCurrentEventId()`); nil means from now.
+    public init(
+        root: URL, latency: TimeInterval = 0.3, sinceWhen: FSEventStreamEventId? = nil, onChange: @escaping Handler
+    ) {
         self.root = root
+        self.sinceWhen = sinceWhen
         self.latency = latency
         self.onChange = onChange
     }
@@ -39,7 +44,7 @@ public final class FolderWatcher: @unchecked Sendable {
         }
         let resolved = realpath(root.path, nil).map { p -> String in defer { free(p) }; return String(cString: p) } ?? root.path
         guard let s = FSEventStreamCreate(
-            nil, callback, &context, [resolved] as CFArray, FSEventStreamEventId(kFSEventStreamEventIdSinceNow),
+            nil, callback, &context, [resolved] as CFArray, sinceWhen ?? FSEventStreamEventId(kFSEventStreamEventIdSinceNow),
             latency, flags)
         else {
             Unmanaged<FolderWatcher>.fromOpaque(context.info!).release()
