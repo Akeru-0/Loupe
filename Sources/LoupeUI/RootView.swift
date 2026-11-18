@@ -14,6 +14,7 @@ public struct RootView: View {
         } detail: {
             PhotoGridView(model: model)
                 .overlay { if model.photoSections.isEmpty { DetailPlaceholder(model: model) } }
+                .overlay { if model.viewerPhotoID != nil { PhotoViewer(model: model) } }
                 .toolbar { LibraryToolbar(model: model) }
                 .navigationTitle(model.selectedTitle)
         }

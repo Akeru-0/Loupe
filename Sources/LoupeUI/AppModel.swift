@@ -77,6 +77,8 @@ public struct SidebarGroup: Identifiable, Sendable {
     public private(set) var isScanning = false
     public private(set) var log: [LogEntry] = []
 
+    /// The grid's thumbnail memory cache, so the viewer can show a thumbnail instantly.
+    @ObservationIgnored var thumbnailLoader: ThumbnailLoader?
     @ObservationIgnored private let preferences: any PreferenceStore
     @ObservationIgnored private let supportDirectory: URL
     @ObservationIgnored private let cacheDirectory: URL
@@ -178,6 +180,7 @@ public struct SidebarGroup: Identifiable, Sendable {
         queryTask?.cancel()
         library = nil
         photoSections = []
+        viewerPhotoID = nil
         isScanning = true
 
         let settings = effectiveSettings
@@ -242,6 +245,7 @@ public struct SidebarGroup: Identifiable, Sendable {
     private func selectedItemChanged() {
         guard let id = selectedItemID, let item = item(withID: id) else { return }
         selection = []
+        viewerPhotoID = nil
         query.scope = item.scope
     }
 

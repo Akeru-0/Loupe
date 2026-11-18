@@ -29,6 +29,8 @@ import Observation
     private var focusID: Int64?
     private var anchorID: Int64?
     private var magnification: CGFloat = 0
+    /// The photo the viewer shows; when the viewer closes it is selected and scrolled into view.
+    private var viewerPhotoID: Int64?
     private var changeObserver: (any NSObjectProtocol)?
 
     init(model: AppModel) {
@@ -102,6 +104,7 @@ import Observation
             _ = model.photoSections
             _ = model.columns
             _ = model.selection
+            _ = model.viewerPhotoID
         } onChange: { [weak self] in
             // Called before the change is stored; read the new values on the next main-actor turn.
             Task { @MainActor in
@@ -121,12 +124,29 @@ import Observation
             refreshAgain = false
             infos = [:]
             loader = library.map { ThumbnailLoader(thumbnails: $0.thumbnails) }
+            model.thumbnailLoader = loader
             scheduleRefresh(full: false)
         } else if model.photoSections != shownSections {
             scheduleRefresh(full: false)
         }
         if model.columns != columns { applyColumns(model.columns) }
+        let closedViewerPhoto = model.viewerPhotoID == nil ? viewerPhotoID : nil
+        viewerPhotoID = model.viewerPhotoID
+        if let id = closedViewerPhoto, dataSource.indexPath(for: id) != nil, model.selection != [id] {
+            model.selection = [id]
+        }
         syncSelectionFromModel(prune: false)
+        if let id = closedViewerPhoto { revealAfterViewer(id) }
+    }
+
+    /// The viewer closed on `id` (selected by now): scroll it into view and take the keyboard back.
+    private func revealAfterViewer(_ id: Int64) {
+        if let path = dataSource.indexPath(for: id) {
+            focusID = id
+            anchorID = id
+            collectionView.scrollToItems(at: [path], scrollPosition: .nearestHorizontalEdge)
+        }
+        view.window?.makeFirstResponder(collectionView)
     }
 
     /// Loads missing (or, with `full`, all) cell infos off the main thread, then shows the model's sections.
@@ -374,12 +394,21 @@ import Observation
     private func confirmTrash() {
         let ids = orderedSelection()
         guard !ids.isEmpty, let library, let window = view.window else { return }
+        Self.confirmTrash(ids, library: library, window: window, model: model)
+    }
+
+    /// Asks (as a sheet on `window`) before moving `ids` with all their files to the Trash, then trashes them and
+    /// presents per-photo errors. `completion` gets the ids that were trashed. Shared with the viewer.
+    static func confirmTrash(
+        _ ids: [Int64], library: Library, window: NSWindow, model: AppModel,
+        completion: @escaping @MainActor ([Int64]) -> Void = { _ in }
+    ) {
         let index = library.index, root = library.location.rootURL
-        Task { [weak self] in
+        Task { @MainActor in
             let loaded = await Task.detached(priority: .userInitiated) {
                 Result { try index.actionSelection(ids: ids, root: root) }
             }.value
-            guard let self, self.library === library else { return }
+            guard model.library === library else { return }
             let selection: ActionSelection
             switch loaded {
             case .success(let s): selection = s
@@ -387,17 +416,20 @@ import Observation
             }
             let photoIDs = selection.photos.compactMap(\.id)
             guard !photoIDs.isEmpty else { return }
+            let names = Dictionary(
+                selection.photos.compactMap { p in p.id.map { ($0, p.stem) } }, uniquingKeysWith: { a, _ in a })
             let files = photoIDs.reduce(0) { $0 + (selection.versions[$1]?.count ?? 0) }
             let alert = NSAlert()
-            alert.messageText = Self.trashQuestion(photos: photoIDs.count, files: files)
+            alert.messageText = trashQuestion(photos: photoIDs.count, files: files)
             alert.addButton(withTitle: "Move to Trash")
             alert.addButton(withTitle: "Cancel")
             alert.buttons[0].hasDestructiveAction = true
-            alert.beginSheetModal(for: window) { [weak self] response in
+            alert.beginSheetModal(for: window) { response in
                 guard response == .alertFirstButtonReturn else { return }
                 Task { @MainActor in
                     let errors = await library.trash(photoIDs)
-                    self?.presentErrors(errors, "Couldn't move to the Trash")
+                    presentErrors(errors, "Couldn't move to the Trash", names: names, model: model)
+                    completion(photoIDs.filter { errors[$0] == nil })
                 }
             }
         }
@@ -412,10 +444,17 @@ import Observation
     }
 
     private func presentErrors(_ errors: [Int64: any Error], _ title: String) {
+        var names: [Int64: String] = [:]
+        for id in errors.keys {
+            if let info = infos[id] { names[id] = info.displayFile.url.deletingPathExtension().lastPathComponent }
+        }
+        Self.presentErrors(errors, title, names: names, model: model)
+    }
+
+    private static func presentErrors(_ errors: [Int64: any Error], _ title: String, names: [Int64: String], model: AppModel) {
         guard !errors.isEmpty else { return }
         let lines = errors.sorted { $0.key < $1.key }.prefix(10).map { id, error in
-            let name = infos[id]?.displayFile.url.deletingPathExtension().lastPathComponent ?? "Photo \(id)"
-            return "\(name): \(error.localizedDescription)"
+            "\(names[id] ?? "Photo \(id)"): \(error.localizedDescription)"
         }
         let more = errors.count > lines.count ? "\n…and \(errors.count - lines.count) more" : ""
         model.present(GridError(errorDescription: "\(title):\n" + lines.joined(separator: "\n") + more))
