@@ -94,7 +94,7 @@ public final class Scanner: Sendable {
         components.joined(separator: "/").precomposedStringWithCanonicalMapping
     }
 
-    private func isIgnored(_ components: [String], under root: URL) -> Bool {
+    func isIgnored(_ components: [String], under root: URL) -> Bool {
         var url = root
         for name in components {
             url.appendPathComponent(name)
@@ -108,7 +108,7 @@ public final class Scanner: Sendable {
 
     /// The on-disk spelling of each component (matching NFC/NFD and case), or nil if the folder is missing.
     /// Throws if a parent exists but cannot be listed.
-    private static func resolveOnDisk(_ given: [String], under root: URL) throws -> ([String], URL)? {
+    static func resolveOnDisk(_ given: [String], under root: URL) throws -> ([String], URL)? {
         var url = root
         var out: [String] = []
         let fm = FileManager.default

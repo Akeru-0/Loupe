@@ -17,6 +17,7 @@ public actor Library {
     public nonisolated let location: any StorageLocation
 
     private let scanner: LoupeIndex.Scanner
+    private let settings: LibrarySettings
     private let registry: FeatureRegistry
     private var watcher: FolderWatcher?
 
@@ -30,6 +31,7 @@ public actor Library {
     ) throws {
         self.location = location
         self.registry = registry
+        self.settings = settings
         let digest = SHA256.hash(data: Data(settings.rootPath.utf8)).map { String(format: "%02x", $0) }.joined()
         index = try LibraryIndex(
             databaseURL: supportDirectory.appendingPathComponent("index-\(digest.prefix(12)).sqlite"))
@@ -260,6 +262,185 @@ public actor Library {
             }
         } catch {
             log("Metadata sync failed for photo \(id): \(error)")
+        }
+    }
+
+    // MARK: - File operations
+
+    /// Moves whole photo groups into an existing folder (root-relative, `""` is the root). A photo is moved with
+    /// all its files or not at all. The destination folder is never created here, and excluded, hidden or package
+    /// folders are refused (the photos would vanish from the library). The moved photos get new ids on rescan.
+    public func move(_ ids: [Int64], toFolder: String) async -> [Int64: any Error] {
+        await serialized { await moveLocked(ids, toFolder: toFolder) }
+    }
+
+    private func moveLocked(_ ids: [Int64], toFolder: String) async -> [Int64: any Error] {
+        var errors: [Int64: any Error] = [:]
+        let root = location.rootURL
+        let given = toFolder.split(separator: "/").map(String.init)
+        guard !given.contains(where: { $0 == "." || $0 == ".." }),
+            let (components, destURL) = try? LoupeIndex.Scanner.resolveOnDisk(given, under: root)
+        else {
+            let error = CocoaError(.fileNoSuchFile)
+            return Dictionary(ids.map { ($0, error as any Error) }, uniquingKeysWith: { a, _ in a })
+        }
+        guard !scanner.isIgnored(components, under: root) else {
+            let error = CocoaError(.fileWriteNoPermission)
+            return Dictionary(ids.map { ($0, error as any Error) }, uniquingKeysWith: { a, _ in a })
+        }
+        let destKey = components.joined(separator: "/").precomposedStringWithCanonicalMapping
+        var rescan: Set<String> = []
+        var coverMoves: [(old: String, new: String)] = []
+        for id in ids {
+            do {
+                let photo = try index.photo(id: id)
+                let group = try index.groupFiles(ofPhoto: id, root: root)
+                if FileOperations.sameDirectory(group.folder, destURL) { continue }  // nothing to do
+                let moved = try FileOperations.moveGroup(group, to: destURL)
+                guard let photo else { continue }
+                rescan.insert(photo.folderPath)
+                rescan.insert(destKey)
+                let newKey = destKey.isEmpty ? moved.stem : destKey + "/" + moved.stem
+                coverMoves.append((photo.key, newKey))
+            } catch { errors[id] = error }
+        }
+        await rescanFolders(rescan)
+        updateAlbumCovers(coverMoves)
+        return errors
+    }
+
+    /// Moves whole photo groups to the Trash; a photo is trashed with all its files or not at all.
+    public func trash(_ ids: [Int64]) async -> [Int64: any Error] {
+        await trashReturningItems(ids).errors
+    }
+
+    /// Same as `trash`, also returning where the files ended up (tests clean these up).
+    func trashReturningItems(_ ids: [Int64]) async -> (errors: [Int64: any Error], trashed: [URL]) {
+        await serialized {
+            var errors: [Int64: any Error] = [:]
+            var trashed: [URL] = []
+            var rescan: Set<String> = []
+            for id in ids {
+                do {
+                    let photo = try index.photo(id: id)
+                    trashed += try FileOperations.trashGroup(try index.groupFiles(ofPhoto: id, root: location.rootURL))
+                    if let photo { rescan.insert(photo.folderPath) }
+                } catch { errors[id] = error }
+            }
+            await rescanFolders(rescan)
+            return (errors, trashed)
+        }
+    }
+
+    /// Creates `name` inside `inFolder` and returns its root-relative path. Refuses existing names (case-insensitive).
+    public func createFolder(named name: String, inFolder: String) async throws -> String {
+        let result: Result<String, any Error> = await serialized {
+            do { return .success(try createFolderLocked(name, inFolder: inFolder)) } catch { return .failure(error) }
+        }
+        return try result.get()
+    }
+
+    private func createFolderLocked(_ name: String, inFolder: String) throws -> String {
+        let root = location.rootURL
+        try validateFolderName(name)
+        let given = inFolder.split(separator: "/").map(String.init)
+        guard !given.contains(where: { $0 == "." || $0 == ".." }),
+            let (components, parent) = try LoupeIndex.Scanner.resolveOnDisk(given, under: root)
+        else { throw CocoaError(.fileNoSuchFile) }
+        guard !scanner.isIgnored(components + [name], under: root) else { throw CocoaError(.fileWriteInvalidFileName) }
+        try FileManager.default.createDirectory(
+            at: parent.appendingPathComponent(name, isDirectory: true), withIntermediateDirectories: false)
+        return (components + [name]).joined(separator: "/")
+    }
+
+    /// Renames a folder (same parent) and returns its new root-relative path. Never replaces a sibling.
+    public func renameFolder(_ relative: String, to newName: String) async throws -> String {
+        let result: Result<String, any Error> = await serialized {
+            do { return .success(try await renameFolderLocked(relative, to: newName)) } catch { return .failure(error) }
+        }
+        return try result.get()
+    }
+
+    private func renameFolderLocked(_ relative: String, to newName: String) async throws -> String {
+        let root = location.rootURL
+        try validateFolderName(newName)
+        let given = relative.split(separator: "/").map(String.init)
+        guard !given.isEmpty, !given.contains(where: { $0 == "." || $0 == ".." }),
+            let (components, url) = try LoupeIndex.Scanner.resolveOnDisk(given, under: root)
+        else { throw CocoaError(.fileNoSuchFile) }
+        let parentComponents = Array(components.dropLast())
+        guard !scanner.isIgnored(parentComponents + [newName], under: root), !scanner.isIgnored(components, under: root)
+        else { throw CocoaError(.fileWriteInvalidFileName) }
+        let current = components[components.count - 1]
+        let oldPath = components.joined(separator: "/")
+        let newPath = (parentComponents + [newName]).joined(separator: "/")
+        if current == newName { return oldPath }
+
+        let parent = url.deletingLastPathComponent()
+        let newURL = parent.appendingPathComponent(newName, isDirectory: true)
+        let fm = FileManager.default
+        let newKey = PhotoGrouper.stemKey(newName)
+        if PhotoGrouper.stemKey(current) == newKey {
+            // Case or Unicode spelling only: the same entry, so a plain rename is safe (and the only way on APFS).
+            guard rename(url.path, newURL.path) == 0 else { throw CocoaError(.fileWriteUnknown) }
+        } else {
+            let siblings = try fm.contentsOfDirectory(atPath: parent.path)
+            if siblings.contains(where: { PhotoGrouper.stemKey($0) == newKey }) {
+                throw CocoaError(.fileWriteFileExists)
+            }
+            try fm.moveItem(at: url, to: newURL)  // fails if the destination exists
+        }
+
+        // Rescan is not recursive: a full scan drops the old paths and picks up the new ones.
+        do {
+            let report = try await scanner.fullScan()
+            logFailed(report)
+        } catch { logScanFailure(error) }
+        let oldPrefix = oldPath.precomposedStringWithCanonicalMapping.lowercased()
+        let newNFC = newPath.precomposedStringWithCanonicalMapping
+        rewriteAlbumCovers { cover in
+            let key = cover.precomposedStringWithCanonicalMapping
+            guard key.lowercased().hasPrefix(oldPrefix + "/") else { return nil }
+            return newNFC + key.dropFirst(oldPrefix.count)
+        }
+        return newPath
+    }
+
+    private func validateFolderName(_ name: String) throws {
+        let invalid = name.isEmpty || name == "." || name == ".." || name.hasPrefix(".")
+            || name.contains("/") || name.contains(":") || name.contains("\0")
+            || name != name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if invalid { throw CocoaError(.fileWriteInvalidFileName) }
+    }
+
+    private func rescanFolders(_ folders: Set<String>) async {
+        for rel in folders.sorted() {
+            do { logFailed(try await scanner.rescan(folder: rel)) } catch { logScanFailure(error) }
+        }
+    }
+
+    private func updateAlbumCovers(_ moves: [(old: String, new: String)]) {
+        guard !moves.isEmpty else { return }
+        let table = Dictionary(
+            moves.map { (PhotoGrouper.stemKey($0.old), $0.new) }, uniquingKeysWith: { _, last in last })
+        rewriteAlbumCovers { table[PhotoGrouper.stemKey($0)] }
+    }
+
+    /// Rewrites album covers for which `transform` returns a new key. A corrupt catalog is left untouched.
+    private func rewriteAlbumCovers(_ transform: (String) -> String?) {
+        let root = location.rootURL
+        do {
+            var catalog = try AlbumCatalogIO.load(root: root)
+            var changed = false
+            for i in catalog.albums.indices {
+                if let cover = catalog.albums[i].cover, let new = transform(cover), new != cover {
+                    catalog.albums[i].cover = new
+                    changed = true
+                }
+            }
+            if changed { try AlbumCatalogIO.save(catalog, root: root) }
+        } catch {
+            log("Could not update album covers: \(error)")
         }
     }
 
