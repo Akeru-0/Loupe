@@ -1,0 +1,9 @@
+/// Namespace URIs Loupe matches on. XMP prefixes are arbitrary, so never compare prefixes.
+enum XMPNamespaces {
+    static let x = "adobe:ns:meta/"
+    static let rdf = "http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+    static let xmp = "http://ns.adobe.com/xap/1.0/"
+    static let dc = "http://purl.org/dc/elements/1.1/"
+    static let lr = "http://ns.adobe.com/lightroom/1.0/"
+    static let lc = "http://ns.lightcraft.app/lc/1.0/"
+}

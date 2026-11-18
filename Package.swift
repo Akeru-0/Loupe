@@ -9,11 +9,18 @@ let package = Package(
     ],
     targets: [
         .target(name: "LoupeCore"),
+        .target(name: "LoupeXMP", dependencies: ["LoupeCore"]),
+        .target(name: "LoupeTestSupport", dependencies: ["LoupeCore"]),
         .executableTarget(
             name: "Loupe",
             dependencies: ["LoupeCore"],
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
         .testTarget(name: "LoupeCoreTests", dependencies: ["LoupeCore"]),
+        .testTarget(
+            name: "LoupeXMPTests",
+            dependencies: ["LoupeXMP", "LoupeTestSupport"],
+            resources: [.copy("Fixtures")]
+        ),
     ]
 )
