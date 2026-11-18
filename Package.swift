@@ -10,6 +10,7 @@ let package = Package(
     targets: [
         .target(name: "LoupeCore"),
         .target(name: "LoupeXMP", dependencies: ["LoupeCore"]),
+        .target(name: "LoupeMedia", dependencies: ["LoupeCore"]),
         .target(name: "LoupeTestSupport", dependencies: ["LoupeCore"]),
         .executableTarget(
             name: "Loupe",
@@ -17,6 +18,7 @@ let package = Package(
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
         .testTarget(name: "LoupeCoreTests", dependencies: ["LoupeCore"]),
+        .testTarget(name: "LoupeMediaTests", dependencies: ["LoupeMedia", "LoupeTestSupport"]),
         .testTarget(
             name: "LoupeXMPTests",
             dependencies: ["LoupeXMP", "LoupeTestSupport"],
