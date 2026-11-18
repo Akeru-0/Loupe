@@ -36,6 +36,32 @@ private let devRaw = URL(fileURLWithPath: #filePath)
         #expect(second != nil)
     }
 
+    @Test func concurrentRequestsAllComplete() async throws {
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let cacheDir = dir.appendingPathComponent("cache")
+        let cache = ThumbnailCache(directory: cacheDir)
+        var files: [MediaFile] = []
+        for i in 0..<6 {
+            let src = dir.appendingPathComponent("big\(i).jpg")
+            try TestImages.makeJPEG(at: src, width: 3000 + i, height: 2000)
+            files.append(mediaFile(src))
+        }
+        let sizes = await withTaskGroup(of: Int?.self) { group in
+            for file in files {
+                group.addTask { await cache.thumbnail(for: file, kind: .jpeg).map { max($0.width, $0.height) } }
+            }
+            return await group.reduce(into: [Int?]()) { $0.append($1) }
+        }
+        #expect(sizes.count == 6)
+        #expect(sizes.allSatisfy { $0 != nil && (256...512).contains($0!) })
+        for file in files {
+            let key = ThumbnailCache.key(for: file)
+            let path = cacheDir.appendingPathComponent(String(key.prefix(2))).appendingPathComponent("\(key).jpg").path
+            #expect(FileManager.default.fileExists(atPath: path))
+        }
+    }
+
     @Test func keyChangesWhenFileChanges() {
         let url = URL(fileURLWithPath: "/tmp/x.jpg")
         let a = MediaFile(url: url, size: 10, modified: Date(timeIntervalSince1970: 1), created: Date(timeIntervalSince1970: 1))

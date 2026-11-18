@@ -19,8 +19,16 @@ public actor ThumbnailCache {
         return SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }.joined()
     }
 
+    /// The actor only holds configuration; all I/O and decoding runs in nonisolated async
+    /// statics so concurrent requests are not serialised on the actor.
     public func thumbnail(for file: MediaFile, kind: VersionKind) async -> CGImage? {
-        let key = Self.key(for: file)
+        await Self.load(file, kind: kind, directory: directory, maxPixelSize: maxPixelSize)
+    }
+
+    private nonisolated static func load(
+        _ file: MediaFile, kind: VersionKind, directory: URL, maxPixelSize: Int
+    ) async -> CGImage? {
+        let key = key(for: file)
         let cached = directory.appendingPathComponent(String(key.prefix(2)))
             .appendingPathComponent("\(key).jpg")
         if let source = CGImageSourceCreateWithURL(cached as CFURL, nil),
@@ -31,15 +39,15 @@ public actor ThumbnailCache {
 
         let image: CGImage?
         switch kind {
-        case .video, .live: image = await videoThumbnail(file.url)
-        default: image = imageThumbnail(file.url)
+        case .video, .live: image = await videoThumbnail(file.url, maxPixelSize: maxPixelSize)
+        default: image = imageThumbnail(file.url, maxPixelSize: maxPixelSize)
         }
         guard let image else { return nil }
         write(image, to: cached)
         return image
     }
 
-    private func imageThumbnail(_ url: URL) -> CGImage? {
+    private nonisolated static func imageThumbnail(_ url: URL, maxPixelSize: Int) -> CGImage? {
         guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
         func make(always: Bool) -> CGImage? {
             let options: [CFString: Any] = [
@@ -55,7 +63,7 @@ public actor ThumbnailCache {
         return make(always: true)
     }
 
-    private func videoThumbnail(_ url: URL) async -> CGImage? {
+    private nonisolated static func videoThumbnail(_ url: URL, maxPixelSize: Int) async -> CGImage? {
         let asset = AVURLAsset(url: url)
         do {
             let duration = try await asset.load(.duration).seconds
@@ -70,7 +78,7 @@ public actor ThumbnailCache {
         }
     }
 
-    private func write(_ image: CGImage, to url: URL) {
+    private nonisolated static func write(_ image: CGImage, to url: URL) {
         try? FileManager.default.createDirectory(
             at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         guard let dest = CGImageDestinationCreateWithURL(url as CFURL, UTType.jpeg.identifier as CFString, 1, nil)
