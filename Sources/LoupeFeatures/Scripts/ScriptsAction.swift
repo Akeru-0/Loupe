@@ -18,24 +18,9 @@ public struct ScriptsAction: PhotoAction {
         self.shortcutRunner = shortcutRunner
     }
 
-    /// Files, photo keys and version kinds, in matching order.
-    private func inputs(for selection: ActionSelection) -> (files: [URL], keys: [String], kinds: [VersionKind]) {
-        if let focused = selection.focusedVersion {
-            let photo = selection.photos.first { $0.id == focused.photoId } ?? selection.photos.first
-            return ([focused.url(in: selection.root)], [photo?.key ?? ""], [focused.kind])
-        }
-        var files: [URL] = [], keys: [String] = [], kinds: [VersionKind] = []
-        for photo in selection.photos {
-            guard let id = photo.id, let display = selection.versions[id]?.first(where: \.isDisplay) else { continue }
-            files.append(display.url(in: selection.root))
-            keys.append(photo.key)
-            kinds.append(display.kind)
-        }
-        return (files, keys, kinds)
-    }
-
     @MainActor public func entries(for selection: ActionSelection) -> [ActionMenuEntry] {
-        let (files, keys, kinds) = inputs(for: selection)
+        let targets = selection.targets()
+        let files = targets.map(\.url), keys = targets.map(\.photo.key), kinds = targets.map(\.version.kind)
         let directory = self.directory
         let reveal = self.reveal
         let shortcutRunner = self.shortcutRunner

@@ -14,14 +14,19 @@ public struct ActionSelection: Sendable {
         self.root = root
     }
 
-    /// The focused version if set, otherwise each photo's display version.
-    public func targetFiles() -> [URL] {
-        if let focusedVersion { return [focusedVersion.url(in: root)] }
+    /// The focused version if set, otherwise each photo's display version, with its photo.
+    public func targets() -> [(url: URL, photo: PhotoRecord, version: VersionRecord)] {
+        if let focusedVersion {
+            guard let photo = photos.first(where: { $0.id == focusedVersion.photoId }) ?? photos.first else { return [] }
+            return [(focusedVersion.url(in: root), photo, focusedVersion)]
+        }
         return photos.compactMap { photo in
             guard let id = photo.id, let display = versions[id]?.first(where: \.isDisplay) else { return nil }
-            return display.url(in: root)
+            return (display.url(in: root), photo, display)
         }
     }
+
+    public func targetFiles() -> [URL] { targets().map(\.url) }
 }
 
 /// Services the app offers to actions.

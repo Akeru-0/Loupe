@@ -122,3 +122,53 @@ final class RevealCalls: @unchecked Sendable {
         #expect(reveal.urls == [missing])
     }
 }
+
+@Suite @MainActor struct ScriptSelectionTests {
+    let root = URL(fileURLWithPath: "/tmp/loupe-script-root")
+    func photo(_ id: Int64, _ folder: String, _ stem: String) -> PhotoRecord {
+        PhotoRecord(id: id, locationId: "l", folderPath: folder, stem: stem, stemKey: stem, addedDate: Date())
+    }
+    func version(_ id: Int64, _ path: String, _ kind: VersionKind, display: Bool) -> VersionRecord {
+        VersionRecord(photoId: id, path: path, kind: kind, size: 1, modified: Date(), isDisplay: display)
+    }
+
+    @Test func focusedVersionIsTheOnlyTarget() {
+        let raw = version(2, "b/q.cr2", .raw, display: false)
+        let sel = ActionSelection(
+            photos: [photo(1, "a", "p"), photo(2, "b", "q")],
+            versions: [1: [version(1, "a/p.jpg", .jpeg, display: true)], 2: [raw, version(2, "b/q.jpg", .jpeg, display: true)]],
+            focusedVersion: raw, root: root)
+        let targets = sel.targets()
+        #expect(targets.map(\.url) == sel.targetFiles())
+        #expect(targets.map(\.url) == [root.appendingPathComponent("b/q.cr2")])
+        #expect(targets.map(\.photo.key) == ["b/q"])
+        #expect(targets.map(\.version.kind) == [.raw])
+    }
+
+    @Test func displayVersionsInOrderJoinedInEnvironment() async throws {
+        let sel = ActionSelection(
+            photos: [photo(1, "a", "p"), photo(2, "", "q")],
+            versions: [
+                1: [version(1, "a/p.jpg", .jpeg, display: true)],
+                2: [version(2, "q.mov", .video, display: true)],
+            ], root: root)
+        #expect(sel.targets().map(\.url) == sel.targetFiles())
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("loupe-scripts-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let script = dir.appendingPathComponent("e.sh")
+        try "#!/bin/sh\nprintf '%s|%s' \"$LOUPE_PHOTO_IDS\" \"$LOUPE_VERSION_KINDS\"\n".write(to: script, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
+        let logs = LogContext()
+        let action = ScriptsAction(directory: dir, reveal: { _ in })
+        try await action.entries(for: sel)[0].children[0].perform?(logs)
+        #expect(logs.logs == ["Script e exited 0\na/p\nq|jpeg\nvideo"])
+    }
+}
+
+@MainActor final class LogContext: ActionContext {
+    var logs: [String] = []
+    func share(_ urls: [URL]) {}
+    func log(_ message: String) { logs.append(message) }
+    func present(_ error: any Error) {}
+    func chooseApplication() async -> URL? { nil }
+}
