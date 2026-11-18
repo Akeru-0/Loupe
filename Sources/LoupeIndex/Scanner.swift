@@ -5,6 +5,11 @@ import LoupeCore
 import LoupeMedia
 import LoupeXMP
 
+public enum ScanError: Error, Equatable {
+    /// The root is missing (e.g. unmounted) or cannot be read; the index is left untouched.
+    case rootUnavailable(String)
+}
+
 public struct ScanReport: Equatable, Sendable {
     public var added = 0
     public var updated = 0
@@ -39,8 +44,8 @@ public final class Scanner: Sendable {
     // MARK: - Public
 
     public func fullScan() async throws -> ScanReport {
-        let root = Self.canonical(location.rootURL)
-        let listings = Self.walk(root: root, excluded: excludedNames)
+        let root = try Self.canonicalRoot(location.rootURL)
+        let (listings, unreadable) = Self.walk(root: root, excluded: excludedNames)
         var report = ScanReport()
         for rel in listings.keys.sorted() {
             try Task.checkCancellation()
@@ -49,34 +54,88 @@ public final class Scanner: Sendable {
         let stale = try await index.dbPool.read { db in
             try String.fetchAll(db, sql: "SELECT DISTINCT folderPath FROM photo WHERE locationId = ?",
                                 arguments: [location.id])
-        }.filter { listings[$0] == nil }
+        }.filter { folder in
+            listings[folder] == nil
+                && !unreadable.contains { $0 == folder || (!$0.isEmpty && folder.hasPrefix($0 + "/")) }
+        }
         for folder in stale { report.removed += try deletePhotos(inFolder: folder, recursive: false) }
         return report
     }
 
+    /// Rescans one folder (not its subfolders). Folders that are excluded, hidden or inside a package are
+    /// never indexed. Throws, leaving the index untouched, if the root or the folder cannot be read.
     public func rescan(folder relativePath: String) async throws -> ScanReport {
-        let root = Self.canonical(location.rootURL)
-        let folderURL = VersionRecord(photoId: 0, path: relativePath, kind: .image, size: 0, modified: .distantPast)
-            .url(in: root)
+        let root = try Self.canonicalRoot(location.rootURL)
+        let given = relativePath.split(separator: "/").map(String.init)
         var report = ScanReport()
-        var isDir: ObjCBool = false
-        if FileManager.default.fileExists(atPath: folderURL.path, isDirectory: &isDir), isDir.boolValue {
-            let listing = Self.list(folder: folderURL)
-            try await process(folder: relativePath, listing: listing, root: root, report: &report)
-        } else {
-            report.removed += try deletePhotos(inFolder: relativePath, recursive: true)
+
+        guard let (components, folderURL) = try Self.resolveOnDisk(given, under: root) else {
+            report.removed += try deletePhotos(inFolder: Self.folderKey(given), recursive: true)
+            return report
         }
+        let key = Self.folderKey(components)
+        if isIgnored(components, under: root) {
+            report.removed += try deletePhotos(inFolder: key, recursive: true)
+            return report
+        }
+        let listing = try Self.list(folder: folderURL)
+        try await process(folder: key, listing: listing, root: root, report: &report)
         return report
+    }
+
+    /// Stored folder paths are NFC so SQL comparisons do not depend on how a caller spelled them.
+    private static func folderKey(_ components: [String]) -> String {
+        components.joined(separator: "/").precomposedStringWithCanonicalMapping
+    }
+
+    private func isIgnored(_ components: [String], under root: URL) -> Bool {
+        var url = root
+        for name in components {
+            url.appendPathComponent(name)
+            if name.hasPrefix(".") || excludedNames.contains(PhotoGrouper.stemKey(name))
+                || Self.packageExtensions.contains(url.pathExtension.lowercased())
+                || (try? url.resourceValues(forKeys: [.isPackageKey]))?.isPackage == true
+            { return true }
+        }
+        return false
+    }
+
+    /// The on-disk spelling of each component (matching NFC/NFD and case), or nil if the folder is missing.
+    /// Throws if a parent exists but cannot be listed.
+    private static func resolveOnDisk(_ given: [String], under root: URL) throws -> ([String], URL)? {
+        var url = root
+        var out: [String] = []
+        let fm = FileManager.default
+        for name in given {
+            let names: [String]
+            do { names = try fm.contentsOfDirectory(atPath: url.path) } catch {
+                var isDir: ObjCBool = false
+                if !fm.fileExists(atPath: url.path, isDirectory: &isDir) || !isDir.boolValue { return nil }
+                throw error
+            }
+            let key = PhotoGrouper.stemKey(name)
+            guard let actual = names.first(where: { $0 == name }) ?? names.first(where: { PhotoGrouper.stemKey($0) == key })
+            else { return nil }
+            out.append(actual)
+            url.appendPathComponent(actual)
+        }
+        var isDir: ObjCBool = false
+        guard fm.fileExists(atPath: url.path, isDirectory: &isDir), isDir.boolValue else { return nil }
+        return (out, url)
     }
 
     // MARK: - Disk listing
 
     /// `URL.resolvingSymlinksInPath` rewrites /private/var to /var, which would not match what the
     /// enumerator reports; `realpath` is consistent with the file system.
-    private static func canonical(_ url: URL) -> URL {
-        guard let resolved = realpath(url.path, nil) else { return url }
+    private static func canonicalRoot(_ url: URL) throws -> URL {
+        guard let resolved = realpath(url.path, nil) else { throw ScanError.rootUnavailable(url.path) }
         defer { free(resolved) }
-        return URL(fileURLWithPath: String(cString: resolved), isDirectory: true)
+        let root = URL(fileURLWithPath: String(cString: resolved), isDirectory: true)
+        do { _ = try FileManager.default.contentsOfDirectory(atPath: root.path) } catch {
+            throw ScanError.rootUnavailable(url.path)
+        }
+        return root
     }
 
     private var excludedNames: Set<String> {
@@ -84,6 +143,7 @@ public final class Scanner: Sendable {
     }
 
     private struct Listing {
+        var folderURL: URL?
         var files: [MediaFile] = []
         var sidecars: [(url: URL, modified: Date)] = []
     }
@@ -96,6 +156,7 @@ public final class Scanner: Sendable {
     private static func add(_ url: URL, to listing: inout Listing) {
         guard let v = try? url.resourceValues(forKeys: Set(keys)), v.isRegularFile == true else { return }
         let modified = v.contentModificationDate ?? Date(timeIntervalSince1970: 0)
+        listing.folderURL = url.deletingLastPathComponent()
         if url.pathExtension.lowercased() == "xmp" {
             listing.sidecars.append((url, modified))
         } else {
@@ -104,22 +165,32 @@ public final class Scanner: Sendable {
         }
     }
 
-    private static func list(folder: URL) -> Listing {
+    private static func list(folder: URL) throws -> Listing {
         var listing = Listing()
-        let urls = (try? FileManager.default.contentsOfDirectory(
-            at: folder, includingPropertiesForKeys: keys, options: [.skipsHiddenFiles])) ?? []
+        listing.folderURL = folder
+        let urls = try FileManager.default.contentsOfDirectory(
+            at: folder, includingPropertiesForKeys: keys, options: [.skipsHiddenFiles])
         for url in urls { add(url, to: &listing) }
         return listing
     }
 
     /// Synchronous because `FileManager.DirectoryEnumerator` cannot be iterated from async code.
-    private static func walk(root: URL, excluded: Set<String>) -> [String: Listing] {
+    private final class ErrorBox: @unchecked Sendable { var folders: Set<String> = [] }
+
+    /// Returns the folders that have files, plus folders the enumerator could not read (their stored
+    /// photos must be kept, not treated as deleted).
+    private static func walk(root: URL, excluded: Set<String>) -> ([String: Listing], Set<String>) {
         var out: [String: Listing] = [:]
+        let errors = ErrorBox()
+        let handler: (URL, Error) -> Bool = { url, _ in
+            let isDir = (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? true
+            errors.folders.insert(folderKey(of: isDir ? url : url.deletingLastPathComponent(), root: root))
+            return true
+        }
         guard let enumerator = FileManager.default.enumerator(
             at: root, includingPropertiesForKeys: keys,
-            options: [.skipsHiddenFiles, .skipsPackageDescendants], errorHandler: { _, _ in true })
-        else { return out }
-        let rootCount = root.pathComponents.count
+            options: [.skipsHiddenFiles, .skipsPackageDescendants], errorHandler: handler)
+        else { return (out, [""]) }
         for case let url as URL in enumerator {
             guard let v = try? url.resourceValues(forKeys: Set(keys)) else { continue }
             if v.isDirectory == true {
@@ -130,12 +201,13 @@ public final class Scanner: Sendable {
                 }
                 continue
             }
-            let parts = url.pathComponents
-            guard parts.count > rootCount else { continue }
-            let folder = parts[rootCount..<(parts.count - 1)].joined(separator: "/")
-            add(url, to: &out[folder, default: Listing()])
+            add(url, to: &out[folderKey(of: url.deletingLastPathComponent(), root: root), default: Listing()])
         }
-        return out
+        return (out, errors.folders)
+    }
+
+    private static func folderKey(of folder: URL, root: URL) -> String {
+        relative(folder, root: root).precomposedStringWithCanonicalMapping
     }
 
     private static func relative(_ url: URL, root: URL) -> String {
@@ -164,8 +236,7 @@ public final class Scanner: Sendable {
     }
 
     private func process(folder: String, listing: Listing, root: URL, report: inout ScanReport) async throws {
-        let folderURL = VersionRecord(photoId: 0, path: folder, kind: .image, size: 0, modified: .distantPast)
-            .url(in: root)
+        let folderURL = listing.folderURL ?? root
         let groups = PhotoGrouper(editMarkers: settings.editMarkers)
             .group(listing.files, sidecars: listing.sidecars.map(\.url), in: folderURL)
         let sidecarDates = Dictionary(listing.sidecars.map { ($0.url.path, $0.modified) }, uniquingKeysWith: { a, _ in a })
@@ -195,9 +266,10 @@ public final class Scanner: Sendable {
             try Task.checkCancellation()
             let sidecarModified = group.sidecar.flatMap { sidecarDates[$0.path] }
             let old = existing[group.stemKey]
-            if let old, Self.isUnchanged(old.photo, old.versions, group, sidecarModified, root: root) { continue }
+            let legacy = Self.fingerprint(group.legacySidecars, dates: sidecarDates)
+            if let old, Self.isUnchanged(old.photo, old.versions, group, sidecarModified, legacy, root: root) { continue }
             do {
-                let id = try await save(group, sidecarModified: sidecarModified, existingId: old?.photo.id,
+                let id = try await save(group, sidecarModified: sidecarModified, existingId: old?.photo.id, legacy: legacy,
                                         folder: folder, root: root, report: &report)
                 report.scannedPhotoIDs.append(id)
                 if old == nil { report.added += 1 } else { report.updated += 1 }
@@ -209,12 +281,18 @@ public final class Scanner: Sendable {
         }
     }
 
+    private static func fingerprint(_ legacy: [URL], dates: [String: Date]) -> String? {
+        guard !legacy.isEmpty else { return nil }
+        return legacy.map { "\($0.lastPathComponent)@\(dates[$0.path]?.timeIntervalSince1970 ?? 0)" }
+            .sorted().joined(separator: "|")
+    }
+
     private static func close(_ a: Date, _ b: Date) -> Bool { abs(a.timeIntervalSince(b)) < 0.001 }
 
     private static func isUnchanged(
-        _ photo: PhotoRecord, _ versions: [VersionRecord], _ group: PhotoGroup, _ sidecarModified: Date?, root: URL
+        _ photo: PhotoRecord, _ versions: [VersionRecord], _ group: PhotoGroup, _ sidecarModified: Date?, _ legacy: String?, root: URL
     ) -> Bool {
-        guard photo.stem == group.stem, versions.count == group.versions.count else { return false }
+        guard photo.stem == group.stem, photo.legacySidecarFingerprint == legacy, versions.count == group.versions.count else { return false }
         switch (photo.sidecarModified, sidecarModified) {
         case (nil, nil): break
         case let (a?, b?): if !close(a, b) { return false }
@@ -230,7 +308,7 @@ public final class Scanner: Sendable {
     }
 
     private func save(
-        _ original: PhotoGroup, sidecarModified: Date?, existingId: Int64?, folder: String, root: URL,
+        _ original: PhotoGroup, sidecarModified: Date?, existingId: Int64?, legacy: String?, folder: String, root: URL,
         report: inout ScanReport
     ) async throws -> Int64 {
         let group = Self.reclassifyLightCraftExports(original)
@@ -259,7 +337,7 @@ public final class Scanner: Sendable {
             cameraModel: camera, lensModel: lens,
             hasRaw: group.versions.contains { $0.kind == .raw },
             hasVideo: group.versions.contains { $0.kind == .video || $0.kind == .live },
-            sidecarModified: sidecarModified)
+            sidecarModified: sidecarModified, legacySidecarFingerprint: legacy)
 
         return try await index.dbPool.write { [photo, group, infos, metadata, display] db in
             var photo = photo

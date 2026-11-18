@@ -170,4 +170,80 @@ private struct Env {
         _ = try await e.scanner.fullScan()
         #expect(try e.versions("a/IMG_1").map(\.kind) == [.raw, .jpeg])
     }
+
+    // MARK: - Fix round 1
+
+    @Test func missingRootThrowsAndKeepsIndex() async throws {
+        let e = try Env()
+        try e.lib.addJPEG("a/one.jpg")
+        try e.lib.addJPEG("b/two.jpg")
+        _ = try await e.scanner.fullScan()
+        try FileManager.default.removeItem(at: e.lib.root)
+        await #expect(throws: (any Error).self) { _ = try await e.scanner.fullScan() }
+        await #expect(throws: (any Error).self) { _ = try await e.scanner.rescan(folder: "a") }
+        #expect(try e.index.allPhotos().count == 2)
+    }
+
+    @Test func unreadableSubfolderKeepsItsPhotos() async throws {
+        let e = try Env()
+        try e.lib.addJPEG("a/one.jpg")
+        try e.lib.addJPEG("b/two.jpg")
+        try e.lib.addJPEG("b/deep/three.jpg")
+        _ = try await e.scanner.fullScan()
+        let b = e.lib.url("b").path
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: b)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: b) }
+        _ = try? await e.scanner.fullScan()
+        await #expect(throws: (any Error).self) { _ = try await e.scanner.rescan(folder: "b") }
+        #expect(try e.index.allPhotos().map(\.key) == ["a/one", "b/two", "b/deep/three"])
+    }
+
+    @Test func rescanHonoursExclusionHiddenAndPackageRules() async throws {
+        let e = try Env()
+        try e.lib.addJPEG("Test.photoslibrary/sub/z.jpg")
+        try e.lib.addJPEG("LightCraft Library/thumbs/t.jpg")
+        try e.lib.addJPEG(".hidden/y.jpg")
+        try e.lib.addJPEG("ok/in.jpg")
+        for f in ["Test.photoslibrary/sub", "Test.photoslibrary", "LightCraft Library/thumbs", "LightCraft Library", ".hidden"] {
+            _ = try await e.scanner.rescan(folder: f)
+        }
+        #expect(try e.index.allPhotos().isEmpty)
+        _ = try await e.scanner.rescan(folder: "ok")
+        #expect(try e.index.allPhotos().count == 1)
+    }
+
+    @Test func rescanCanonicalisesFolderSpelling() async throws {
+        let e = try Env()
+        let nfd = "Z\u{030C}lu\u{0074}\u{030C}"
+        let nfc = "\u{017D}lu\u{0165}"
+        try e.lib.addJPEG("\(nfd)/a.jpg")
+        _ = try await e.scanner.fullScan()
+        _ = try await e.scanner.rescan(folder: nfc)
+        _ = try await e.scanner.rescan(folder: nfd + "/")
+        _ = try await e.scanner.rescan(folder: nfc + "/")
+        #expect(try e.index.allPhotos().count == 1)
+        #expect(try e.index.photo(key: "\(nfc)/a") != nil)
+        #expect(try e.index.photo(key: "\(nfd)/a") != nil)
+        let before = try e.snapshot()
+        _ = try await e.scanner.fullScan()
+        #expect(try e.index.allPhotos().count == 1)
+        let fresh = try Env(lib: e.lib)
+        _ = try await fresh.scanner.fullScan()
+        #expect(try e.snapshot() == fresh.snapshot())
+        #expect(before == (try e.snapshot()))
+    }
+
+    @Test func legacySidecarChangesAreDetected() async throws {
+        let e = try Env()
+        try e.lib.addJPEG("a/IMG_1.jpg")
+        try e.lib.addSidecar("a/IMG_1.jpg.xmp", rating: 2)
+        _ = try await e.scanner.fullScan()
+        #expect(try e.index.photo(key: "a/IMG_1")?.rating == 2)
+        try e.lib.addSidecar("a/IMG_1.jpg.xmp", rating: 4)
+        _ = try await e.scanner.rescan(folder: "a")
+        #expect(try e.index.photo(key: "a/IMG_1")?.rating == 4)
+        try e.lib.remove("a/IMG_1.jpg.xmp")
+        _ = try await e.scanner.rescan(folder: "a")
+        #expect(try e.index.photo(key: "a/IMG_1")?.rating == 0)
+    }
 }

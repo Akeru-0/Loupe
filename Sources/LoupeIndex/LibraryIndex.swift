@@ -35,7 +35,8 @@ public final class LibraryIndex: Sendable {
 
     /// `key` is `stem` at the root, else `folderPath/stem`. Matching is by normalized stem key.
     public func photo(key: String) throws -> PhotoRecord? {
-        let folder: String, stem: String
+        var folder: String
+        let stem: String
         if let slash = key.lastIndex(of: "/") {
             folder = String(key[key.startIndex..<slash])
             stem = String(key[key.index(after: slash)...])
@@ -44,6 +45,7 @@ public final class LibraryIndex: Sendable {
             stem = key
         }
         let stemKey = PhotoGrouper.stemKey(stem)
+        folder = folder.precomposedStringWithCanonicalMapping
         return try dbPool.read { db in
             try PhotoRecord.fetchAll(db, sql: "SELECT * FROM photo WHERE folderPath = ? AND stemKey = ?",
                                      arguments: [folder, stemKey]).first

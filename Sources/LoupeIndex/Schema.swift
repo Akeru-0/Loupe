@@ -21,6 +21,7 @@ enum Schema {
                     hasRaw BOOLEAN NOT NULL DEFAULT 0,
                     hasVideo BOOLEAN NOT NULL DEFAULT 0,
                     sidecarModified DOUBLE,
+                    legacySidecarFingerprint TEXT,
                     UNIQUE(locationId, folderPath, stemKey)
                 );
                 CREATE INDEX photo_captureDate ON photo(captureDate);
