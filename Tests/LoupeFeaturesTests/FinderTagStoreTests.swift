@@ -136,4 +136,36 @@ import LoupeCore
         _ = try store.push(PhotoMetadata(rating: 4), files: [jpg], lastState: nil)
         #expect(try tags(jpg) == ["\u{2605}\u{2605}\u{2605}", "\u{2605} best", "\u{2605}6", "\u{2605}4"])
     }
+
+    func inode(_ url: URL) throws -> UInt64 {
+        (try FileManager.default.attributesOfItem(atPath: url.path)[.systemFileNumber] as! NSNumber).uint64Value
+    }
+
+    @Test func replacedFileCannotRemoveTags() throws {
+        let state = try store.push(meta, files: [raw, jpg], lastState: nil)
+        let tmp = dir.appendingPathComponent("a.jpg.tmp")
+        try Data([9]).write(to: tmp)
+        #expect(rename(tmp.path, jpg.path) == 0)  // atomic replace: same name, new inode, no tags
+        #expect(try tags(jpg).isEmpty)
+        #expect(try store.pull(files: [raw, jpg], lastState: state).isEmpty)
+    }
+
+    @Test func clearingTagsInPlaceStillRemoves() throws {
+        let state = try store.push(meta, files: [raw, jpg], lastState: nil)
+        try set(jpg, [])
+        #expect(try store.pull(files: [raw, jpg], lastState: state)
+            == [.setFavorite(false), .removeTag("Iceland")])
+    }
+
+    @Test func pushKeepsFileIdentity() throws {
+        let before = try inode(jpg)
+        _ = try store.push(meta, files: [jpg], lastState: nil)
+        #expect(try inode(jpg) == before)
+    }
+
+    @Test func stateWithoutIdentitiesFallsBackToNames() throws {
+        let legacy = try JSONSerialization.data(withJSONObject: ["tags": ["Iceland"], "files": ["a.jpg"]])
+        try set(jpg, [])
+        #expect(try store.pull(files: [jpg], lastState: legacy) == [.removeTag("Iceland")])
+    }
 }

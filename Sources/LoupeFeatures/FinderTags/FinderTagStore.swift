@@ -50,6 +50,14 @@ public struct FinderTagStore: MetadataStore {
     private struct State: Codable {
         var tags: [String]
         var files: [String]?
+        /// NFC file name -> inode at push time. Absent in older states: then names alone decide.
+        var inodes: [String: UInt64]?
+    }
+
+    /// File identity is the inode (`.systemFileNumber`). Writing Finder tags (an xattr) keeps it;
+    /// an atomic replace/re-export at the same path gives a new one (and no tags).
+    private static func inode(_ url: URL) -> UInt64? {
+        (try? FileManager.default.attributesOfItem(atPath: url.path)[.systemFileNumber] as? NSNumber)?.flatMap { $0 }?.uint64Value
     }
 
     private static func fileName(_ url: URL) -> String { url.lastPathComponent.precomposedStringWithCanonicalMapping }
@@ -85,7 +93,10 @@ public struct FinderTagStore: MetadataStore {
             }
         }
         if let firstError { throw firstError }
-        return try JSONEncoder().encode(State(tags: set, files: files.map(Self.fileName).sorted()))
+        return try JSONEncoder().encode(State(
+            tags: set, files: files.map(Self.fileName).sorted(),
+            inodes: Dictionary(files.compactMap { f in Self.inode(f).map { (Self.fileName(f), $0) } },
+                               uniquingKeysWith: { a, _ in a })))
     }
 
     public func pull(files: [URL], lastState: Data?) throws -> [MetadataChange] {
@@ -105,7 +116,14 @@ public struct FinderTagStore: MetadataStore {
             for (k, name) in tags where lastByKey[k] == nil { added[k] = name }
         }
         // Only files that were part of the last push may vote for removal.
-        let voters = zip(files, perFile).filter { pushed?.contains(Self.fileName($0.0)) ?? true }.map(\.1)
+        // A file votes only if its name and (when recorded) inode match the last push, so a file
+        // replaced at the same path without its tags contributes additions only.
+        let voters = zip(files, perFile).filter { file, _ in
+            let name = Self.fileName(file)
+            guard pushed?.contains(name) ?? true else { return false }
+            guard let recorded = last?.inodes?[name] else { return true }
+            return Self.inode(file) == recorded
+        }.map(\.1)
         var removed: [String: String] = [:]
         for (k, name) in lastByKey where voters.contains(where: { $0[k] == nil }) { removed[k] = name }
 
