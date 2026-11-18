@@ -8,7 +8,9 @@ public enum XMPError: Error, Equatable {
 /// A tolerant reader for XMP packets and sidecars. Matches on namespace URI, never prefix,
 /// and merges every `rdf:Description` (LightCraft writes two).
 public struct XMPDocument {
-    public let metadata: PhotoMetadata
+    public internal(set) var metadata: PhotoMetadata
+    /// The parsed tree, kept so writes can edit it in place and leave foreign content untouched.
+    var document: XMLDocument
     /// The `x:xmptk` value of the packet, if any.
     public let writerToolkit: String?
 
@@ -20,6 +22,7 @@ public struct XMPDocument {
             throw XMPError.malformed(error.localizedDescription)
         }
         guard let root = doc.rootElement() else { throw XMPError.malformed("no root element") }
+        document = doc
 
         writerToolkit = Self.toolkit(of: root)
         let descriptions = Self.descendants(of: root).filter { Self.isElement($0, XMPNamespaces.rdf, "Description") }
@@ -73,7 +76,7 @@ public struct XMPDocument {
 
     // MARK: - Helpers
 
-    private static func key(_ s: String) -> String {
+    static func key(_ s: String) -> String {
         s.precomposedStringWithCanonicalMapping.lowercased()
     }
 
@@ -82,11 +85,11 @@ public struct XMPDocument {
         return items.filter { seen.insert($0).inserted }
     }
 
-    private static func isElement(_ node: XMLNode, _ uri: String, _ local: String) -> Bool {
+    static func isElement(_ node: XMLNode, _ uri: String, _ local: String) -> Bool {
         node.kind == .element && node.uri == uri && node.localName == local
     }
 
-    private static func descendants(of element: XMLElement) -> [XMLElement] {
+    static func descendants(of element: XMLElement) -> [XMLElement] {
         var out: [XMLElement] = []
         for case let child as XMLElement in element.children ?? [] {
             out.append(child)
