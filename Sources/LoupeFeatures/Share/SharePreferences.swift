@@ -5,16 +5,16 @@ public enum SharePreferences {
 
     /// Defaults to `true` when never set.
     public static var removeLocation: Bool {
-        get { removeLocation(in: .standard) }
-        set { setRemoveLocation(newValue, in: .standard) }
+        get { removeLocation(in: UserDefaultsStore.standard) }
+        set { setRemoveLocation(newValue, in: UserDefaultsStore.standard) }
     }
 
-    static func removeLocation(in defaults: UserDefaults) -> Bool {
-        defaults.object(forKey: key) as? Bool ?? true
+    static func removeLocation(in store: any PreferenceStore) -> Bool {
+        store.bool(forKey: key) ?? true
     }
 
-    static func setRemoveLocation(_ value: Bool, in defaults: UserDefaults) {
-        defaults.set(value, forKey: key)
+    static func setRemoveLocation(_ value: Bool, in store: any PreferenceStore) {
+        store.set(value, forKey: key)
     }
 
     /// `$TMPDIR/Loupe-Share/`

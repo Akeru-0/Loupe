@@ -4,6 +4,15 @@ import Testing
 import LoupeCore
 @testable import LoupeFeatures
 
+final class InMemoryPreferences: PreferenceStore, @unchecked Sendable {
+    private let lock = NSLock()
+    private var values: [String: Any] = [:]
+    func string(forKey key: String) -> String? { lock.withLock { values[key] as? String } }
+    func bool(forKey key: String) -> Bool? { lock.withLock { values[key] as? Bool } }
+    func set(_ value: String?, forKey key: String) { lock.withLock { values[key] = value } }
+    func set(_ value: Bool, forKey key: String) { lock.withLock { values[key] = value } }
+}
+
 @MainActor final class FakeContext: ActionContext {
     var logs: [String] = []
     var chosen: URL?
@@ -32,12 +41,11 @@ final class Calls: @unchecked Sendable {
 
 @Suite @MainActor struct EditInTests {
     let root = URL(fileURLWithPath: "/tmp/loupe-editin-root")
-    let suite = "loupe-editin-\(UUID().uuidString)"
-    let defaults: UserDefaults
+    let defaults: any PreferenceStore
     let calls = Calls()
 
     init() {
-        defaults = UserDefaults(suiteName: suite)!
+        defaults = InMemoryPreferences()
     }
 
     func photo(_ id: Int64) -> PhotoRecord {
@@ -75,7 +83,6 @@ final class Calls: @unchecked Sendable {
     }
 
     @Test func editEntryShapeAndDefaultFirst() throws {
-        defer { defaults.removePersistentDomain(forName: suite) }
         let def = try fakeApp("x.default", name: "Default")
         let other = try fakeApp("x.other", name: "Other")
         EditorPreferences.setDefaultEditor(def, in: defaults)
@@ -90,7 +97,6 @@ final class Calls: @unchecked Sendable {
     }
 
     @Test func normalAppOpensTargetFiles() async throws {
-        defer { defaults.removePersistentDomain(forName: suite) }
         let app = try fakeApp("x.normal", name: "Normal")
         EditorPreferences.setDefaultEditor(app, in: defaults)
         let ctx = FakeContext()
@@ -102,7 +108,6 @@ final class Calls: @unchecked Sendable {
     }
 
     @Test func lightCraftRevealsActivatesAndLogsButNeverOpens() async throws {
-        defer { defaults.removePersistentDomain(forName: suite) }
         let lc = try fakeApp("ai.storyteller.lightcraft", name: "LightCraft")
         EditorPreferences.setDefaultEditor(lc, in: defaults)
         let ctx = FakeContext()
@@ -114,7 +119,6 @@ final class Calls: @unchecked Sendable {
     }
 
     @Test func noDefaultChoosesSavesAndOpens() async throws {
-        defer { defaults.removePersistentDomain(forName: suite) }
         let app = try fakeApp("x.chosen", name: "Chosen")
         let ctx = FakeContext()
         ctx.chosen = app
@@ -124,7 +128,6 @@ final class Calls: @unchecked Sendable {
     }
 
     @Test func childOpensOnceWithoutChangingDefault() async throws {
-        defer { defaults.removePersistentDomain(forName: suite) }
         let def = try fakeApp("x.default", name: "Default")
         let other = try fakeApp("x.other", name: "Other")
         EditorPreferences.setDefaultEditor(def, in: defaults)

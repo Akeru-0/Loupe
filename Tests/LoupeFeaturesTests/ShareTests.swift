@@ -7,6 +7,10 @@ import LoupeCore
 import LoupeTestSupport
 @testable import LoupeFeatures
 
+private let devRaw = URL(fileURLWithPath: #filePath)
+    .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+    .appendingPathComponent("dev-library/IMG_2174.CR2").path
+
 @Suite @MainActor struct ShareTests {
     let dir: URL
     let out: URL
@@ -136,7 +140,7 @@ import LoupeTestSupport
     }
 
     @Test func menuFlagsKeptLocation() throws {
-        let defaults = UserDefaults(suiteName: "loupe-share-\(UUID().uuidString)")!
+        let defaults = InMemoryPreferences()
         let action = ShareAction(exporters: [OriginalExporter(), JPEGExporter.highQuality, JPEGExporter.small],
                                  outputDirectory: out, defaults: defaults)
         func selection(_ kind: VersionKind, _ path: String) -> ActionSelection {
@@ -155,9 +159,35 @@ import LoupeTestSupport
     }
 
     @Test func removeLocationDefaultsOnAndPersists() {
-        let defaults = UserDefaults(suiteName: "loupe-share-\(UUID().uuidString)")!
+        let defaults = InMemoryPreferences()
         #expect(SharePreferences.removeLocation(in: defaults))
         SharePreferences.setRemoveLocation(false, in: defaults)
         #expect(!SharePreferences.removeLocation(in: defaults))
+    }
+
+    @Test func junkJPEGWithLocationRemovalThrowsAndWritesNothing() throws {
+        let src = dir.appendingPathComponent("junk.jpg")
+        try Data("not an image".utf8).write(to: src)
+        #expect(throws: (any Error).self) {
+            try OriginalExporter().export(src, kind: .jpeg, removeLocation: true, into: out)
+        }
+        let leftovers = (try? FileManager.default.contentsOfDirectory(atPath: out.path)) ?? []
+        #expect(leftovers.isEmpty)
+    }
+
+    @Test(.enabled(if: FileManager.default.fileExists(atPath: devRaw)))
+    func realRawThroughJPEGPresets() throws {
+        let raw = URL(fileURLWithPath: devRaw)
+        let before = try sha(raw)
+        for exporter in [JPEGExporter.small, JPEGExporter.highQuality] {
+            let result = try exporter.export(raw, kind: .raw, removeLocation: true, into: out)
+            #expect(result.lastPathComponent == "IMG_2174.jpg")
+            let source = try #require(CGImageSourceCreateWithURL(result as CFURL, nil))
+            #expect(CGImageSourceGetType(source) as String? == UTType.jpeg.identifier)
+            let (w, h) = try size(result)
+            if exporter.maxLongEdge != nil { #expect(max(w, h) <= 2048 && max(w, h) > 0) } else { #expect(max(w, h) > 0) }
+            #expect(try props(result)[kCGImagePropertyGPSDictionary] == nil)
+        }
+        #expect(try sha(raw) == before)
     }
 }

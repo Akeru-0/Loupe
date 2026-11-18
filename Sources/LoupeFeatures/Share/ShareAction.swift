@@ -6,12 +6,12 @@ public struct ShareAction: PhotoAction {
     public let id = "share"
     private let exporters: [any ShareExporter]
     private let outputDirectory: URL
-    nonisolated(unsafe) private let defaults: UserDefaults
+    private let defaults: any PreferenceStore
 
     public init(
         exporters: [any ShareExporter],
         outputDirectory: URL = SharePreferences.defaultOutputDirectory,
-        defaults: UserDefaults = .standard
+        defaults: any PreferenceStore = UserDefaultsStore.standard
     ) {
         self.exporters = exporters
         self.outputDirectory = outputDirectory

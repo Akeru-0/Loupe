@@ -19,18 +19,22 @@ public struct OriginalExporter: ShareExporter {
         let folder = directory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         let out = folder.appendingPathComponent(file.lastPathComponent)
-        guard removeLocation, Self.canStripLocation(file),
-            let source = CGImageSourceCreateWithURL(file as CFURL, nil),
+        guard removeLocation, Self.canStripLocation(file) else {
+            try FileManager.default.copyItem(at: file, to: out)
+            return out
+        }
+        // Fail closed: if the location can't be removed, share nothing rather than the original with GPS.
+        guard let source = CGImageSourceCreateWithURL(file as CFURL, nil),
             let type = CGImageSourceGetType(source),
             let dest = CGImageDestinationCreateWithURL(out as CFURL, type, 1, nil)
         else {
-            try FileManager.default.copyItem(at: file, to: out)
-            return out
+            try? FileManager.default.removeItem(at: folder)
+            throw ShareExportError.cannotRemoveLocation(file)
         }
         let options: [CFString: Any] = [kCGImageMetadataShouldExcludeGPS: true]
         var error: Unmanaged<CFError>?
         guard CGImageDestinationCopyImageSource(dest, source, options as CFDictionary, &error) else {
-            try? FileManager.default.removeItem(at: out)
+            try? FileManager.default.removeItem(at: folder)
             throw error?.takeRetainedValue() ?? ShareExportError.encodeFailed(file)
         }
         return out
@@ -40,11 +44,13 @@ public struct OriginalExporter: ShareExporter {
 public enum ShareExportError: Error, LocalizedError {
     case unreadable(URL)
     case encodeFailed(URL)
+    case cannotRemoveLocation(URL)
 
     public var errorDescription: String? {
         switch self {
         case .unreadable(let url): "Can't read \(url.lastPathComponent)"
         case .encodeFailed(let url): "Can't export \(url.lastPathComponent)"
+        case .cannotRemoveLocation(let url): "Can't remove the location from \(url.lastPathComponent)"
         }
     }
 }

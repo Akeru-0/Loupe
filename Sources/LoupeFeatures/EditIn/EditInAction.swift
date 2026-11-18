@@ -35,12 +35,12 @@ public struct EditInAction: PhotoAction {
     public let id = "edit-in"
     private let appsForFile: @Sendable (URL) -> [URL]
     private let hooks: Hooks
-    nonisolated(unsafe) private let defaults: UserDefaults
+    private let defaults: any PreferenceStore
 
     public init(
         appsForFile: @escaping @Sendable (URL) -> [URL] = { NSWorkspace.shared.urlsForApplications(toOpen: $0) },
         hooks: Hooks = .live,
-        defaults: UserDefaults = .standard
+        defaults: any PreferenceStore = UserDefaultsStore.standard
     ) {
         self.appsForFile = appsForFile
         self.hooks = hooks
