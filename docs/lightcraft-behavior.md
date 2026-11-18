@@ -20,3 +20,9 @@ LightCraft 0.21.1. Probe file: `~/Pictures/_loupe-lc-probe/IMG_2174.CR2` (+ `.xm
 In LightCraft's Export dialog: destination **Same folder as original**, file name **`{name}-edited`**, format JPEG (or HEIC). Loupe detects these exports by the `-edited` suffix, and by the embedded `xmp:CreatorTool = LightCraft` for older exports named `{name}`.
 
 **Task 12 needed: YES.** LightCraft wrote back a stale rating (Step 4). Better fix to evaluate in Task 12/14: after each Loupe sidecar write, send `photo.readMetadataFromFile` over LightCraft's control channel (`--control PORT`) so its catalog picks up the change. The guard (detect and re-apply) remains the fallback when LightCraft runs without `--control`.
+
+## Edit in LightCraft (Task 14)
+
+LightCraft (`ai.storyteller.lightcraft`) declares no document types, so `NSWorkspace.open(_:withApplicationAt:)` fails and it never appears in `urlsForApplications(toOpen:)`. When the chosen editor (default or a child entry) is LightCraft, Loupe's "Edit" therefore does not open the files. It reveals the target files in Finder, activates/launches LightCraft, and logs "LightCraft can't open files directly — drag the selected file into LightCraft". The default editor is always listed first in the Edit submenu, even when the system doesn't list it.
+
+Driving LightCraft's control channel (`library.import`, `photo.readMetadataFromFile` over `--control PORT`) is deferred to a later phase.
