@@ -99,4 +99,41 @@ import LoupeCore
         try set(jpg, ["Albums|Trip", "Iceland"])
         #expect(try store.pull(files: [jpg], lastState: nil) == [.addTag("Iceland")])
     }
+
+    @Test func identicalRepushDoesNotWrite() throws {
+        let state = try store.push(meta, files: [jpg, raw], lastState: nil)
+        try FileManager.default.setAttributes([.posixPermissions: 0o444], ofItemAtPath: raw.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: raw.path) }
+        _ = try store.push(meta, files: [jpg, raw], lastState: state)  // would throw if it wrote the read-only file
+    }
+
+    @Test func pushAttemptsEveryVersionBeforeRethrowing() throws {
+        try FileManager.default.setAttributes([.posixPermissions: 0o444], ofItemAtPath: raw.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: raw.path) }
+        #expect(throws: (any Error).self) { try store.push(meta, files: [raw, jpg], lastState: nil) }
+        #expect(try tags(jpg) == ["Iceland", "Favorite", "\u{2605}3"])
+    }
+
+    @Test func neverPushedFileCannotRemoveTags() throws {
+        let state = try store.push(meta, files: [raw], lastState: nil)
+        let newJPG = dir.appendingPathComponent("a-edited.jpg")
+        try Data([3]).write(to: newJPG)
+        #expect(try store.pull(files: [raw, newJPG], lastState: state).isEmpty)
+        try set(raw, ["Favorite", "\u{2605}3"])
+        #expect(try store.pull(files: [raw, newJPG], lastState: state) == [.removeTag("Iceland")])
+    }
+
+    @Test func oldFormatStateTreatsAllFilesAsPushed() throws {
+        let old = try JSONEncoder().encode(["Iceland"])
+        try set(jpg, [])
+        #expect(try store.pull(files: [jpg], lastState: old) == [.removeTag("Iceland")])
+    }
+
+    @Test func onlyExactStarTagsAreManaged() throws {
+        try set(jpg, ["\u{2605}\u{2605}\u{2605}", "\u{2605} best", "\u{2605}6", "\u{2605}2"])
+        #expect(try store.pull(files: [jpg], lastState: nil)
+            == [.addTag("\u{2605} best"), .addTag("\u{2605}6"), .addTag("\u{2605}\u{2605}\u{2605}")])
+        _ = try store.push(PhotoMetadata(rating: 4), files: [jpg], lastState: nil)
+        #expect(try tags(jpg) == ["\u{2605}\u{2605}\u{2605}", "\u{2605} best", "\u{2605}6", "\u{2605}4"])
+    }
 }

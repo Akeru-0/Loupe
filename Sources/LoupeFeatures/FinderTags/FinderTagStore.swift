@@ -20,7 +20,11 @@ public struct FinderTagStore: MetadataStore {
         s.precomposedStringWithCanonicalMapping.folding(options: .caseInsensitive, locale: nil)
     }
 
-    private static func isStar(_ s: String) -> Bool { s.hasPrefix(star) }
+    /// Exactly the tags Loupe writes: ★ followed by one digit 1-5. "★★★" or "★ best" are ordinary tags.
+    private static func isStar(_ s: String) -> Bool {
+        let chars = Array(s)
+        return chars.count == 2 && String(chars[0]) == star && ("1"..."5").contains(chars[1])
+    }
     private static func isAlbum(_ s: String) -> Bool { s.hasPrefix(Keywords.albumPrefix) }
 
     static func mirrorSet(_ m: PhotoMetadata) -> [String] {
@@ -39,29 +43,54 @@ public struct FinderTagStore: MetadataStore {
         return try url.resourceValues(forKeys: [.tagNamesKey]).tagNames ?? []
     }
 
-    private static func decode(_ data: Data?) -> [String]? {
-        guard let data else { return nil }
-        return try? JSONDecoder().decode([String].self, from: data)
+    /// State: the pushed set plus the names (NFC) of the version files it was pushed to.
+    /// Only those files may cause removals on pull; a file not listed (new export, copy, an app's
+    /// atomic save that dropped xattrs) contributes additions only. An old-format state (a plain
+    /// array of tags) decodes with `files == nil`, meaning "all current files were pushed".
+    private struct State: Codable {
+        var tags: [String]
+        var files: [String]?
     }
 
+    private static func fileName(_ url: URL) -> String { url.lastPathComponent.precomposedStringWithCanonicalMapping }
+
+    private static func decode(_ data: Data?) -> State? {
+        guard let data else { return nil }
+        if let st = try? JSONDecoder().decode(State.self, from: data) { return st }
+        if let tags = try? JSONDecoder().decode([String].self, from: data) { return State(tags: tags, files: nil) }
+        return nil
+    }
+
+    /// Identical tags are never rewritten (an identical xattr write still emits an FSEvent, which
+    /// would loop through the watcher). Sets differing only in case/normalisation are also left alone.
+    /// Every file is attempted; the first error is rethrown afterwards.
     public func push(_ metadata: PhotoMetadata, files: [URL], lastState: Data?) throws -> Data {
         let set = Self.mirrorSet(metadata)
         let setKeys = Set(set.map(Self.key))
-        let lastKeys = Set((Self.decode(lastState) ?? []).map(Self.key))
+        let lastKeys = Set((Self.decode(lastState)?.tags ?? []).map(Self.key))
+        var firstError: (any Error)?
         for file in files {
-            var result = set
-            for t in try Self.read(file) {
-                let k = Self.key(t)
-                if setKeys.contains(k) || lastKeys.contains(k) || Self.isStar(t) { continue }
-                result.append(t)  // user's own Finder tag, not managed by Loupe
+            do {
+                let current = try Self.read(file)
+                var result = set
+                for t in current {
+                    let k = Self.key(t)
+                    if setKeys.contains(k) || lastKeys.contains(k) || Self.isStar(t) { continue }
+                    result.append(t)  // user's own Finder tag, not managed by Loupe
+                }
+                if Set(current.map(Self.key)) == Set(result.map(Self.key)) { continue }
+                try (file as NSURL).setResourceValue(result.sorted(), forKey: .tagNamesKey)
+            } catch {
+                firstError = firstError ?? error
             }
-            try (file as NSURL).setResourceValue(result.sorted(), forKey: .tagNamesKey)
         }
-        return try JSONEncoder().encode(set)
+        if let firstError { throw firstError }
+        return try JSONEncoder().encode(State(tags: set, files: files.map(Self.fileName).sorted()))
     }
 
     public func pull(files: [URL], lastState: Data?) throws -> [MetadataChange] {
         let last = Self.decode(lastState)
+        let pushed = last?.files.map(Set.init)
         let perFile = try files.map { file in
             Dictionary(
                 try Self.read(file).filter { !Self.isStar($0) && !Self.isAlbum($0) }
@@ -69,14 +98,16 @@ public struct FinderTagStore: MetadataStore {
                 uniquingKeysWith: { a, _ in a })
         }
         let lastByKey = Dictionary(
-            (last ?? []).filter { !Self.isStar($0) }.map { (Self.key($0), $0) }, uniquingKeysWith: { a, _ in a })
+            (last?.tags ?? []).filter { !Self.isStar($0) }.map { (Self.key($0), $0) }, uniquingKeysWith: { a, _ in a })
 
         var added: [String: String] = [:]
         for tags in perFile {
             for (k, name) in tags where lastByKey[k] == nil { added[k] = name }
         }
+        // Only files that were part of the last push may vote for removal.
+        let voters = zip(files, perFile).filter { pushed?.contains(Self.fileName($0.0)) ?? true }.map(\.1)
         var removed: [String: String] = [:]
-        for (k, name) in lastByKey where perFile.contains(where: { $0[k] == nil }) { removed[k] = name }
+        for (k, name) in lastByKey where voters.contains(where: { $0[k] == nil }) { removed[k] = name }
 
         let fav = Self.key(Keywords.favorite)
         var changes: [MetadataChange] = []
