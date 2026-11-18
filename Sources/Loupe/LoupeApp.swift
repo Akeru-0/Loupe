@@ -1,12 +1,22 @@
-import LoupeCore
+import LoupeUI
 import SwiftUI
 
 @main
 struct LoupeApp: App {
+    private let model: AppModel
+
+    init() {
+        model = AppModel()
+        model.launch()
+    }
+
     var body: some Scene {
-        WindowGroup {
-            Text("Loupe \(LoupeCore.version)")
-                .frame(minWidth: 900, minHeight: 600)
+        Window("Loupe", id: "main") {
+            RootView(model: model)
+        }
+        .commands { LoupeCommands(model: model) }
+        Settings {
+            SettingsView(model: model)
         }
     }
 }

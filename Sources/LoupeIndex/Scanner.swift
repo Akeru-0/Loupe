@@ -98,12 +98,21 @@ public final class Scanner: Sendable {
         var url = root
         for name in components {
             url.appendPathComponent(name)
-            if name.hasPrefix(".") || excludedNames.contains(PhotoGrouper.stemKey(name))
-                || Self.packageExtensions.contains(url.pathExtension.lowercased())
-                || (try? url.resourceValues(forKeys: [.isPackageKey]))?.isPackage == true
-            { return true }
+            if Self.isIgnoredFolder(url, excludedNames: excludedNames) { return true }
         }
         return false
+    }
+
+    /// True for a folder the scanner never enters: hidden, a package, or named in `settings.excludedFolderNames`.
+    public static func ignores(folder url: URL, settings: LibrarySettings) -> Bool {
+        isIgnoredFolder(url, excludedNames: Set(settings.excludedFolderNames.map(PhotoGrouper.stemKey)))
+    }
+
+    private static func isIgnoredFolder(_ url: URL, excludedNames: Set<String>) -> Bool {
+        let name = url.lastPathComponent
+        return name.hasPrefix(".") || excludedNames.contains(PhotoGrouper.stemKey(name))
+            || packageExtensions.contains(url.pathExtension.lowercased())
+            || (try? url.resourceValues(forKeys: [.isPackageKey]))?.isPackage == true
     }
 
     /// The on-disk spelling of each component (matching NFC/NFD and case), or nil if the folder is missing.

@@ -22,16 +22,22 @@ let package = Package(
             name: "LoupeFeatures",
             dependencies: ["LoupeCore", "LoupeXMP", "LoupeMedia", "LoupeIndex"]
         ),
+        .target(
+            name: "LoupeUI",
+            dependencies: ["LoupeCore", "LoupeXMP", "LoupeMedia", "LoupeIndex", "LoupeFeatures"],
+            swiftSettings: [.swiftLanguageMode(.v5)]
+        ),
         .target(name: "LoupeTestSupport", dependencies: ["LoupeCore"]),
         .executableTarget(
             name: "Loupe",
-            dependencies: ["LoupeCore"],
+            dependencies: ["LoupeUI"],
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
         .testTarget(name: "LoupeCoreTests", dependencies: ["LoupeCore"]),
         .testTarget(name: "LoupeFeaturesTests", dependencies: ["LoupeFeatures", "LoupeTestSupport"]),
         .testTarget(name: "LoupeIndexTests", dependencies: ["LoupeIndex", "LoupeTestSupport"]),
         .testTarget(name: "LoupeMediaTests", dependencies: ["LoupeMedia", "LoupeTestSupport"]),
+        .testTarget(name: "LoupeUITests", dependencies: ["LoupeUI", "LoupeTestSupport"]),
         .testTarget(
             name: "LoupeXMPTests",
             dependencies: ["LoupeXMP", "LoupeTestSupport"],

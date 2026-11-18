@@ -1,12 +1,30 @@
 import Foundation
 import LoupeCore
 
-public enum FileOperationError: Error {
+public enum FileOperationError: LocalizedError {
     case destinationMissing(URL)
     case fileNameMismatch(String)
-    case noFreeName(String)
+    /// The photo's stem and the folder it could not be moved into.
+    case noFreeName(String, destination: URL)
     /// An operation failed and putting the files back failed too; `stranded` still sit at their new location.
     case rollbackFailed(underlying: any Error, stranded: [URL])
+
+    public var errorDescription: String? {
+        switch self {
+        case .destinationMissing(let url):
+            "Can't move into \(Self.name(url)): the folder no longer exists."
+        case .fileNameMismatch(let name):
+            "Can't rename \(name): its name doesn't start with the photo's name."
+        case .noFreeName(let stem, let destination):
+            "Can't move \(stem) into \(Self.name(destination)): a photo with that name already exists there "
+                + "and no free name was found."
+        case .rollbackFailed(let underlying, let stranded):
+            "\(underlying.localizedDescription) Putting the files back failed too; these are still at their new "
+                + "location: \(stranded.map(\.path).joined(separator: ", "))"
+        }
+    }
+
+    private static func name(_ url: URL) -> String { FileManager.default.displayName(atPath: url.path) }
 }
 
 /// Moves and trashes whole photo groups all-or-nothing. Never overwrites, never touches file contents.
@@ -65,7 +83,7 @@ public enum FileOperations {
             { break }
 
             n += 1
-            if n > 100 { throw FileOperationError.noFreeName(g.stem) }
+            if n > 100 { throw FileOperationError.noFreeName(g.stem, destination: destination) }
         }
 
         var moved: [(from: URL, to: URL)] = []

@@ -1,0 +1,325 @@
+import AppKit
+import Foundation
+import LoupeCore
+import LoupeFeatures
+import LoupeIndex
+import Observation
+import UniformTypeIdentifiers
+
+public enum BrowseMode: CaseIterable, Hashable {
+    case years, months, days, all
+
+    var title: String {
+        switch self {
+        case .years: "Years"
+        case .months: "Months"
+        case .days: "Days"
+        case .all: "All Photos"
+        }
+    }
+
+    var grouping: PhotoQuery.Grouping {
+        switch self {
+        case .years: .year
+        case .months: .month
+        case .days: .day
+        case .all: .none
+        }
+    }
+}
+
+public struct LogEntry: Identifiable, Sendable {
+    public let id = UUID()
+    public let date: Date
+    public let message: String
+}
+
+/// One sidebar section with its items, as shown.
+public struct SidebarGroup: Identifiable, Sendable {
+    public let id: String
+    public let title: String?
+    public let items: [SidebarItem]
+}
+
+/// App state: the open library, the sidebar, the current query and its results, settings and the activity log.
+/// Disk and database work runs off the main actor; this class only publishes results.
+@MainActor @Observable public final class AppModel: ActionContext {
+    public nonisolated static let defaultSupportDirectory = FileManager.default
+        .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("Loupe", isDirectory: true)
+    public nonisolated static let defaultCacheDirectory = FileManager.default
+        .urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("Loupe", isDirectory: true)
+    static let settingsKey = "library.settings"
+
+    public private(set) var library: Library?
+    public let registry: FeatureRegistry
+    /// As persisted. The `-LoupeRoot` launch argument (`rootOverride`) wins over `settings.rootPath`.
+    public private(set) var settings: LibrarySettings
+    public let rootOverride: String?
+
+    public var selectedItemID: String? = "library" { didSet { selectedItemChanged() } }
+    public var query = PhotoQuery() { didSet { if query != oldValue { observeQuery() } } }
+    public var selection: Set<Int64> = []
+    public var viewerPhotoID: Int64?
+    public var mode: BrowseMode = .all { didSet { query.grouping = mode.grouping } }
+    public var columns = 7
+    public var showsActivityLog = false
+    public var alertMessage: String?
+
+    public private(set) var sidebar: [SidebarGroup] = []
+    public private(set) var photoSections: [PhotoSection] = []
+    public private(set) var cameras: [String] = []
+    public private(set) var lenses: [String] = []
+    public private(set) var isScanning = false
+    public private(set) var log: [LogEntry] = []
+
+    @ObservationIgnored private let preferences: any PreferenceStore
+    @ObservationIgnored private let supportDirectory: URL
+    @ObservationIgnored private let cacheDirectory: URL
+    /// Bumped whenever the library is replaced; late results for an older library are dropped.
+    @ObservationIgnored private var generation = 0
+    @ObservationIgnored private var openTask: Task<Void, Never>?
+    @ObservationIgnored private var queryTask: Task<Void, Never>?
+    @ObservationIgnored private var sidebarTask: Task<Void, Never>?
+    @ObservationIgnored private var sidebarRefreshPending = false
+    @ObservationIgnored private var observers: [any NSObjectProtocol] = []
+
+    public init(
+        preferences: any PreferenceStore = UserDefaultsStore.standard,
+        rootOverride: String? = UserDefaults.standard.string(forKey: "LoupeRoot"),
+        supportDirectory: URL = AppModel.defaultSupportDirectory,
+        cacheDirectory: URL = AppModel.defaultCacheDirectory
+    ) {
+        var registry = FeatureRegistry()
+        for feature in BuiltInFeatures.all { feature.register(in: &registry) }
+        self.registry = registry
+        self.preferences = preferences
+        self.rootOverride = rootOverride
+        self.supportDirectory = supportDirectory
+        self.cacheDirectory = cacheDirectory
+        settings = Self.loadSettings(from: preferences)
+    }
+
+    /// The settings the library runs with.
+    public var effectiveSettings: LibrarySettings {
+        var s = settings
+        if let rootOverride { s.rootPath = rootOverride }
+        return s
+    }
+
+    public var photoCount: Int { photoSections.reduce(0) { $0 + $1.photoIDs.count } }
+
+    public var scanStatus: String {
+        let n = photoCount
+        return isScanning ? "Scanning… \(n.formatted())" : (n == 1 ? "1 photo" : "\(n.formatted()) photos")
+    }
+
+    public var selectedTitle: String {
+        selectedItemID.flatMap(item(withID:))?.title ?? "Loupe"
+    }
+
+    // MARK: - Launch and library lifetime
+
+    /// Call once at app launch.
+    public func launch() {
+        SharePreferences.clearOutputDirectory()
+        for dir in [supportDirectory, cacheDirectory, ScriptsFeature.scriptsDirectory] {
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        }
+        let center = NotificationCenter.default
+        observers.append(center.addObserver(forName: Library.didLog, object: nil, queue: .main) { [weak self] note in
+            let message = note.userInfo?["message"] as? String ?? "\(note)"
+            MainActor.assumeIsolated { self?.log(message) }
+        })
+        for name in [Library.didChange, Library.albumsDidChange] {
+            observers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.refreshSidebar() }
+            })
+        }
+        openLibrary()
+    }
+
+    /// Persists `new`; a different root, edit markers or exclusions replace the library (the old one is stopped).
+    public func updateSettings(_ new: LibrarySettings) {
+        guard new != settings else { return }
+        let before = effectiveSettings
+        settings = new
+        if let data = try? JSONEncoder().encode(new) {
+            preferences.set(String(decoding: data, as: UTF8.self), forKey: Self.settingsKey)
+        }
+        let after = effectiveSettings
+        if before.rootPath != after.rootPath || before.editMarkers != after.editMarkers
+            || before.excludedFolderNames != after.excludedFolderNames
+        {
+            openLibrary()
+        } else {
+            refreshSidebar()
+        }
+    }
+
+    static func loadSettings(from preferences: any PreferenceStore) -> LibrarySettings {
+        guard let json = preferences.string(forKey: settingsKey),
+            let settings = try? JSONDecoder().decode(LibrarySettings.self, from: Data(json.utf8))
+        else { return .standard() }
+        return settings
+    }
+
+    /// Stops the current library (if any), opens one for `effectiveSettings` and scans it in the background.
+    private func openLibrary() {
+        generation += 1
+        let gen = generation
+        let old = library
+        let oldOpen = openTask
+        oldOpen?.cancel()
+        queryTask?.cancel()
+        library = nil
+        photoSections = []
+        isScanning = true
+
+        let settings = effectiveSettings
+        let registry = registry
+        let support = supportDirectory, cache = cacheDirectory
+        openTask = Task { [weak self] in
+            await old?.stop()
+            // The cancelled open or scan winds down before the new library touches the index (it may be the same file).
+            await oldOpen?.value
+            if let old { self?.log("Closed \(old.location.rootURL.path)") }
+            let opened = await Task.detached(priority: .userInitiated) {
+                Result {
+                    try Library(
+                        location: LocalFolderLocation(rootURL: URL(fileURLWithPath: settings.rootPath, isDirectory: true)),
+                        settings: settings, registry: registry, supportDirectory: support, cacheDirectory: cache)
+                }
+            }.value
+            guard let self, gen == self.generation, !Task.isCancelled else {
+                if case .success(let lib) = opened { await lib.stop() }
+                return
+            }
+            let lib: Library
+            switch opened {
+            case .success(let l): lib = l
+            case .failure(let error):
+                isScanning = false
+                present(error)
+                return
+            }
+            library = lib
+            log("Opened \(settings.rootPath)")
+            observeQuery()
+            refreshSidebar()
+            let started = Date()
+            let report = await lib.start()
+            guard gen == generation else { return }
+            isScanning = false
+            log(String(
+                format: "Scan finished in %.1f s: %d added, %d updated, %d removed, %d unreadable",
+                Date().timeIntervalSince(started), report.added, report.updated, report.removed, report.failed.count))
+        }
+    }
+
+    // MARK: - Query
+
+    private func observeQuery() {
+        queryTask?.cancel()
+        guard let library else { return }
+        let stream = library.index.observeSections(for: query)
+        queryTask = Task { [weak self] in
+            do {
+                for try await sections in stream {
+                    guard !Task.isCancelled else { return }
+                    self?.photoSections = sections
+                }
+            } catch {
+                if !Task.isCancelled { self?.log("Could not load photos: \(error.localizedDescription)") }
+            }
+        }
+    }
+
+    private func selectedItemChanged() {
+        guard let id = selectedItemID, let item = item(withID: id) else { return }
+        selection = []
+        query.scope = item.scope
+    }
+
+    // MARK: - Sidebar
+
+    /// Rebuilds the sidebar (and the filter menus' cameras and lenses) off the main actor; coalesces bursts.
+    func refreshSidebar() {
+        guard let library else { return }
+        if sidebarTask != nil {
+            sidebarRefreshPending = true
+            return
+        }
+        let sections = registry.sidebarSections.sorted { $0.order < $1.order }
+        let index = library.index, root = library.location.rootURL, settings = effectiveSettings
+        let gen = generation
+        sidebarTask = Task { [weak self] in
+            let result = await Task.detached(priority: .userInitiated) {
+                var groups: [SidebarGroup] = []
+                var errors: [String] = []
+                for section in sections {
+                    do {
+                        let items = try section.items(index: index, root: root, settings: settings)
+                        groups.append(SidebarGroup(id: section.id, title: section.title, items: items))
+                    } catch {
+                        errors.append("Sidebar \(section.title ?? section.id): \(error.localizedDescription)")
+                    }
+                }
+                return (groups, (try? index.cameras()) ?? [], (try? index.lenses()) ?? [], errors)
+            }.value
+            guard let self else { return }
+            sidebarTask = nil
+            if gen == generation {
+                (sidebar, cameras, lenses) = (result.0, result.1, result.2)
+                for message in result.3 { log(message) }
+                if let id = selectedItemID, item(withID: id) == nil { selectedItemID = "library" }
+            }
+            if sidebarRefreshPending {
+                sidebarRefreshPending = false
+                refreshSidebar()
+            }
+        }
+    }
+
+    func item(withID id: String) -> SidebarItem? {
+        func find(_ items: [SidebarItem]) -> SidebarItem? {
+            for item in items {
+                if item.id == id { return item }
+                if let found = find(item.children) { return found }
+            }
+            return nil
+        }
+        return find(sidebar.flatMap(\.items))
+    }
+
+    // MARK: - ActionContext
+
+    public func share(_ urls: [URL]) {
+        guard !urls.isEmpty, let view = NSApp.keyWindow?.contentView else { return }
+        let anchor = NSRect(x: view.bounds.midX, y: view.bounds.midY, width: 1, height: 1)
+        NSSharingServicePicker(items: urls).show(relativeTo: anchor, of: view, preferredEdge: .minY)
+    }
+
+    public func log(_ message: String) {
+        log.append(LogEntry(date: Date(), message: message))
+        if log.count > 2000 { log.removeFirst(log.count - 2000) }
+    }
+
+    public func present(_ error: any Error) {
+        log(error.localizedDescription)
+        alertMessage = error.localizedDescription
+    }
+
+    public func chooseApplication() async -> URL? {
+        let panel = NSOpenPanel()
+        panel.directoryURL = URL(fileURLWithPath: "/Applications", isDirectory: true)
+        panel.allowedContentTypes = [.applicationBundle]
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.message = "Choose an app to edit photos with."
+        panel.prompt = "Choose"
+        let response = await withCheckedContinuation { continuation in
+            panel.begin { continuation.resume(returning: $0) }
+        }
+        return response == .OK ? panel.url : nil
+    }
+}

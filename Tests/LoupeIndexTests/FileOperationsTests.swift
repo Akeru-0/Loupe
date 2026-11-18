@@ -268,7 +268,9 @@ private func addFullGroup(_ lib: TestLibrary, _ dir: String) throws {
         try lib.addJPEG("b/IMG_1.jpg")
         let g = try #require(try groups(in: lib.url("a")).first)
         // "IMG_1-2 (n)" still derives from IMG_1 whatever n is, so no name keeps the photos apart: refuse, move nothing.
-        #expect(throws: (any Error).self) { try FileOperations.moveGroup(g, to: lib.url("b")) }
+        let error = #expect(throws: FileOperationError.self) { try FileOperations.moveGroup(g, to: lib.url("b")) }
+        #expect(error?.localizedDescription
+            == "Can't move IMG_1-2 into b: a photo with that name already exists there and no free name was found.")
         #expect(FileManager.default.fileExists(atPath: lib.url("a/IMG_1-2.jpg").path))
         #expect(try groups(in: lib.url("b")).count == 1)
     }

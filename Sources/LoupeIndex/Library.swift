@@ -11,6 +11,8 @@ import LoupeXMP
 public actor Library {
     public static let albumsDidChange = Notification.Name("LoupeLibraryAlbumsDidChange")
     public static let didLog = Notification.Name("LoupeLibraryDidLog")
+    /// Posted after every scan, edit or file operation: folders, tags or albums may have changed.
+    public static let didChange = Notification.Name("LoupeLibraryDidChange")
 
     public nonisolated let index: LibraryIndex
     public nonisolated let thumbnails: ThumbnailCache
@@ -49,6 +51,7 @@ public actor Library {
         }
         let result = await body()
         if waiters.isEmpty { busy = false } else { waiters.removeFirst().resume() }
+        NotificationCenter.default.post(name: Library.didChange, object: nil)
         return result
     }
 
@@ -80,6 +83,7 @@ public actor Library {
             logFailed(report)
             await guardAgainstStaleRevert(photoIDs: report.sidecarChangedPhotoIDs)
             for id in ((try? index.allPhotos()) ?? []).compactMap(\.id) {
+                if Task.isCancelled { break }  // the app is replacing this library
                 await syncStores(photoID: id, pushIfUnchanged: true)
             }
             return report
