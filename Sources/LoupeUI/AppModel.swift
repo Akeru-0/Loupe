@@ -60,7 +60,12 @@ public struct SidebarGroup: Identifiable, Sendable {
     public var query = PhotoQuery() { didSet { if query != oldValue { observeQuery() } } }
     public var selection: Set<Int64> = []
     public var viewerPhotoID: Int64?
-    public var mode: BrowseMode = .all { didSet { query.grouping = mode.grouping } }
+    public var mode: BrowseMode = .all {
+        didSet {
+            query.grouping = mode.grouping
+            columns = GridLayout.defaultColumns(for: mode)
+        }
+    }
     public var columns = 7
     public var showsActivityLog = false
     public var alertMessage: String?

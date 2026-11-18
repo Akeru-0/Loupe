@@ -28,14 +28,19 @@ public actor ThumbnailCache {
     private nonisolated static func load(
         _ file: MediaFile, kind: VersionKind, directory: URL, maxPixelSize: Int
     ) async -> CGImage? {
+        // A grid cell scrolled away before its request ran: skip the work.
+        guard !Task.isCancelled else { return nil }
         let key = key(for: file)
         let cached = directory.appendingPathComponent(String(key.prefix(2)))
             .appendingPathComponent("\(key).jpg")
+        // Decode now, here: a lazily decoded image would read and decode the file when first drawn, on the main thread.
         if let source = CGImageSourceCreateWithURL(cached as CFURL, nil),
-            let image = CGImageSourceCreateImageAtIndex(source, 0, nil)
+            let image = CGImageSourceCreateImageAtIndex(
+                source, 0, [kCGImageSourceShouldCacheImmediately: true] as CFDictionary)
         {
             return image
         }
+        guard !Task.isCancelled else { return nil }
 
         let image: CGImage?
         switch kind {

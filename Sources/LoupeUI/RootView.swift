@@ -12,7 +12,8 @@ public struct RootView: View {
             SidebarView(model: model)
                 .navigationSplitViewColumnWidth(min: 180, ideal: 230, max: 360)
         } detail: {
-            DetailPlaceholder(model: model)
+            PhotoGridView(model: model)
+                .overlay { if model.photoSections.isEmpty { DetailPlaceholder(model: model) } }
                 .toolbar { LibraryToolbar(model: model) }
                 .navigationTitle(model.selectedTitle)
         }
@@ -34,7 +35,7 @@ public struct RootView: View {
     }
 }
 
-/// Stands in for the photo grid (Task 18): shows what the current query matches.
+/// Shown over the grid while the current query matches nothing.
 struct DetailPlaceholder: View {
     var model: AppModel
 
@@ -42,9 +43,7 @@ struct DetailPlaceholder: View {
         ContentUnavailableView {
             Label(model.selectedTitle, systemImage: "photo.on.rectangle")
         } description: {
-            Text(model.photoSections.count > 1
-                ? "\(model.scanStatus) in \(model.photoSections.count) sections"
-                : model.scanStatus)
+            Text(model.scanStatus)
         }
     }
 }

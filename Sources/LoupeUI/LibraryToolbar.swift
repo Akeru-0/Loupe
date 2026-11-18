@@ -5,7 +5,7 @@ struct LibraryToolbar: ToolbarContent {
     @Bindable var model: AppModel
 
     /// Grid columns the zoom slider spans; the slider runs the other way (right = fewer, larger photos).
-    private static let columnRange = 3...15
+    private static let columnRange = GridLayout.columnRange
 
     var body: some ToolbarContent {
         ToolbarItem(placement: .principal) {
