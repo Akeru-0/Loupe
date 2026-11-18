@@ -296,7 +296,7 @@ public actor Library {
                 let photo = try index.photo(id: id)
                 let group = try index.groupFiles(ofPhoto: id, root: root)
                 if FileOperations.sameDirectory(group.folder, destURL) { continue }  // nothing to do
-                let moved = try FileOperations.moveGroup(group, to: destURL)
+                let moved = try FileOperations.moveGroup(group, to: destURL, editMarkers: settings.editMarkers)
                 guard let photo else { continue }
                 rescan.insert(photo.folderPath)
                 rescan.insert(destKey)

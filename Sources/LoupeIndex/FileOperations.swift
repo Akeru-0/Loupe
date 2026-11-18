@@ -32,7 +32,9 @@ public enum FileOperations {
     }
 
     @discardableResult
-    public static func moveGroup(_ group: PhotoGroup, to destination: URL) throws -> PhotoGroup {
+    public static func moveGroup(
+        _ group: PhotoGroup, to destination: URL, editMarkers: [String] = LibrarySettings(rootPath: "").editMarkers
+    ) throws -> PhotoGroup {
         let g = try completing(group)
         let fm = FileManager.default
         var isDir: ObjCBool = false
@@ -41,7 +43,10 @@ public enum FileOperations {
         }
         if sameDirectory(g.folder, destination) { return g }
 
-        let existing = Set(try fm.contentsOfDirectory(atPath: destination.path).map(PhotoGrouper.stemKey))
+        let listing = try fm.contentsOfDirectory(atPath: destination.path)
+        let existing = Set(listing.map(PhotoGrouper.stemKey))
+        let grouper = PhotoGrouper(editMarkers: editMarkers)
+        let baseline = memberSets(grouper, listing, in: destination)
         let files = g.allFiles
         var newStem = g.stem
         var targets: [(from: URL, to: URL)] = []
@@ -54,9 +59,13 @@ public enum FileOperations {
                     : try replacingLeadingStem(in: url.lastPathComponent, key: g.stemKey, with: newStem)
                 return (url, destination.appendingPathComponent(name))
             }
-            if !targets.contains(where: { existing.contains(PhotoGrouper.stemKey($0.to.lastPathComponent)) }) { break }
+
+            if !targets.contains(where: { existing.contains(PhotoGrouper.stemKey($0.to.lastPathComponent)) }),
+                staysSeparate(grouper, listing, baseline, targets.map(\.to.lastPathComponent), in: destination)
+            { break }
+
             n += 1
-            if n > 10_000 { throw FileOperationError.noFreeName(g.stem) }
+            if n > 100 { throw FileOperationError.noFreeName(g.stem) }
         }
 
         var moved: [(from: URL, to: URL)] = []
@@ -111,7 +120,31 @@ public enum FileOperations {
         return done.map(\.trashed)
     }
 
+
     // MARK: - Helpers
+
+    private static func memberSets(_ grouper: PhotoGrouper, _ names: [String], in folder: URL) -> [Set<String>] {
+        let urls = names.map { folder.appendingPathComponent($0) }
+        let files = urls.filter { $0.pathExtension.lowercased() != "xmp" }.map {
+            MediaFile(url: $0, size: 0, modified: Date(timeIntervalSince1970: 0), created: Date(timeIntervalSince1970: 0))
+        }
+        let sidecars = urls.filter { $0.pathExtension.lowercased() == "xmp" }
+        return grouper.group(files, sidecars: sidecars, in: folder).map {
+            Set($0.allFiles.map { PhotoGrouper.stemKey($0.lastPathComponent) })
+        }
+    }
+
+    /// True if, with the new names added, the moved files form exactly one group (nothing foreign attached)
+    /// and every group that was already in the folder keeps its members.
+    private static func staysSeparate(
+        _ grouper: PhotoGrouper, _ listing: [String], _ baseline: [Set<String>], _ newNames: [String], in folder: URL
+    ) -> Bool {
+        let mine = Set(newNames.map(PhotoGrouper.stemKey))
+        let after = memberSets(grouper, listing + newNames, in: folder)
+        let touching = after.filter { !$0.isDisjoint(with: mine) }
+        guard touching.count == 1, touching[0].isSubset(of: mine) else { return false }
+        return baseline.allSatisfy { after.contains($0) }
+    }
 
     /// Replaces the leading part of `name` whose normalized, case-folded form is `key`.
     private static func replacingLeadingStem(in name: String, key: String, with newStem: String) throws -> String {

@@ -234,3 +234,53 @@ private func addFullGroup(_ lib: TestLibrary, _ dir: String) throws {
         #expect(try await e.library.createFolder(named: "top", inFolder: "") == "top")
     }
 }
+
+@Suite struct GroupMergeTests {
+    private func sets(_ gs: [PhotoGroup]) -> [Set<String>] {
+        gs.map { Set($0.allFiles.map(\.lastPathComponent)) }
+    }
+
+    @Test func differentExtensionSameStemStaysSeparate() throws {
+        let lib = try TestLibrary()
+        try lib.addFakeRaw("a/IMG_1.CR2")
+        try lib.addSidecar("a/IMG_1.xmp")
+        try lib.addFile("b/IMG_1.HEIC")
+        let g = try #require(try groups(in: lib.url("a")).first)
+        let moved = try FileOperations.moveGroup(g, to: lib.url("b"))
+        #expect(moved.stem == "IMG_1 (1)")
+        let gs = try groups(in: lib.url("b"))
+        #expect(gs.count == 2)
+        #expect(sets(gs).contains(["IMG_1.HEIC"]))
+    }
+
+    @Test func movedPhotoIsNotAbsorbedAsEdit() throws {
+        let lib = try TestLibrary()
+        try lib.addJPEG("a/IMG_1.jpg")
+        try lib.addJPEG("b/IMG_1-2.jpg")
+        let g = try #require(try groups(in: lib.url("a")).first)
+        try FileOperations.moveGroup(g, to: lib.url("b"))
+        #expect(try groups(in: lib.url("b")).count == 2)
+    }
+
+    @Test func movedPhotoDoesNotAbsorbExisting() throws {
+        let lib = try TestLibrary()
+        try lib.addJPEG("a/IMG_1-2.jpg")
+        try lib.addJPEG("b/IMG_1.jpg")
+        let g = try #require(try groups(in: lib.url("a")).first)
+        // "IMG_1-2 (n)" still derives from IMG_1 whatever n is, so no name keeps the photos apart: refuse, move nothing.
+        #expect(throws: (any Error).self) { try FileOperations.moveGroup(g, to: lib.url("b")) }
+        #expect(FileManager.default.fileExists(atPath: lib.url("a/IMG_1-2.jpg").path))
+        #expect(try groups(in: lib.url("b")).count == 1)
+    }
+
+    @Test func batchWithSharedStemStaysSeparate() async throws {
+        let e = try Env()
+        try e.lib.addFakeRaw("a/IMG_5.CR2")
+        try e.lib.addJPEG("c/IMG_5.HEIC")
+        try e.lib.addFile("b/placeholder")
+        _ = await e.library.initialSync()
+        let errors = await e.library.move([try e.id("a/IMG_5"), try e.id("c/IMG_5")], toFolder: "b")
+        #expect(errors.isEmpty)
+        #expect(try groups(in: e.lib.url("b")).count == 2)
+    }
+}
