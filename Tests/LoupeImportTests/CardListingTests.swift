@@ -80,6 +80,25 @@ final class Box<T>: @unchecked Sendable {
         #expect(seen.value.count == count)
     }
 
+    @Test func detectorListsOnItsQueue() throws {
+        let volumes = try FakeVolumes()
+        _ = try volumes.addCard("A")
+        let center = NotificationCenter()
+        let queue = OperationQueue()
+        queue.maxConcurrentOperationCount = 1
+        let seen = Box<[(names: [String], onMain: Bool)]>([])
+        let detector = CardDetector(volumesURL: volumes.url, notificationCenter: center, queue: queue) { cards in
+            seen.value.append((cards.map(\.name), Thread.isMainThread))
+        }
+        detector.start()
+        // Posted from the main thread, as NSWorkspace does; the listing runs on the queue.
+        DispatchQueue.main.sync { center.post(name: NSWorkspace.didMountNotification, object: nil) }
+        queue.waitUntilAllOperationsAreFinished()
+        #expect(seen.value.map(\.names) == [["A"]])
+        #expect(seen.value.allSatisfy { !$0.onMain })
+        detector.stop()
+    }
+
     @Test func listsAndGroupsCardContents() throws {
         let volumes = try FakeVolumes()
         let card = try volumes.addCard()

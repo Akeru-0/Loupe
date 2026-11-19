@@ -19,6 +19,13 @@ public struct ImportProgress: Sendable, Equatable {
     public var filesTotal: Int
     public var bytesDone: Int64
     public var bytesTotal: Int64
+
+    public init(filesDone: Int, filesTotal: Int, bytesDone: Int64, bytesTotal: Int64) {
+        self.filesDone = filesDone
+        self.filesTotal = filesTotal
+        self.bytesDone = bytesDone
+        self.bytesTotal = bytesTotal
+    }
 }
 
 public struct ImportResult: Sendable {
@@ -30,6 +37,15 @@ public struct ImportResult: Sendable {
     public var failed: [URL: any Error] = [:]
     /// The destination folder as it is spelled on disk.
     public var destinationFolder = ""
+
+    public init(
+        imported: [String] = [], skipped: [URL] = [], failed: [URL: any Error] = [:], destinationFolder: String = ""
+    ) {
+        self.imported = imported
+        self.skipped = skipped
+        self.failed = failed
+        self.destinationFolder = destinationFolder
+    }
 }
 
 public enum ImportError: LocalizedError {
@@ -38,6 +54,7 @@ public enum ImportError: LocalizedError {
     case verificationFailed(URL)
     case sourceInsideLibrary(URL)
     case sameVolumeAsSource(URL)
+    case alreadyRunning
 
     public var errorDescription: String? {
         switch self {
@@ -53,6 +70,8 @@ public enum ImportError: LocalizedError {
             return "Can't import from \(url.path): it is already inside the library."
         case .sameVolumeAsSource(let url):
             return "Can't import from \(url.path) into a library on the same disk."
+        case .alreadyRunning:
+            return "An import is already running. Wait for it to finish, then try again."
         }
     }
 }
@@ -366,14 +385,23 @@ extension Library {
         return try await importFiles(plan, progress: progress, using: importer)
     }
 
+    /// One import at a time per library: a second one throws `ImportError.alreadyRunning` and writes nothing.
     nonisolated func importFiles(
         _ plan: ImportPlan, progress: @escaping @Sendable (ImportProgress) -> Void, using importer: Importer
     ) async throws -> ImportResult {
-        let result = try await importer.run(plan, progress: progress) { work in
-            try await self.addingFiles { (try work(), []) }
+        guard await beginImport() else { throw ImportError.alreadyRunning }
+        let result: ImportResult
+        do {
+            result = try await importer.run(plan, progress: progress) { work in
+                try await self.addingFiles { (try work(), []) }
+            }
+        } catch {
+            await endImport()
+            throw error
         }
         // A stopped library throws here; the files are in place and the next scan picks them up.
         try? await addingFiles { ((), [result.destinationFolder]) }
+        await endImport()
         return result
     }
 }

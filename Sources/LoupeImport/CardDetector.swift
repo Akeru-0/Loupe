@@ -19,6 +19,7 @@ public struct Card: Hashable, Sendable {
 public final class CardDetector: @unchecked Sendable {
     private let volumesURL: URL
     private let center: NotificationCenter
+    private let queue: OperationQueue?
     private let onChange: @Sendable ([Card]) -> Void
     private let lock = NSLock()
     private var observers: [any NSObjectProtocol] = []
@@ -26,22 +27,26 @@ public final class CardDetector: @unchecked Sendable {
     public init(
         volumesURL: URL = URL(fileURLWithPath: "/Volumes"),
         notificationCenter: NotificationCenter = NSWorkspace.shared.notificationCenter,
+        queue: OperationQueue? = nil,
         onChange: @escaping @Sendable ([Card]) -> Void
     ) {
         self.volumesURL = volumesURL
         self.center = notificationCenter
+        self.queue = queue
         self.onChange = onChange
     }
 
     deinit { stop() }
 
-    /// Starts observing mounts and unmounts. `onChange` runs on the posting thread with the full current list.
+    /// Starts observing mounts and unmounts. `onChange` runs with the full current list, on `queue` if one was
+    /// given (the app passes a background queue: workspace notifications are posted on the main thread and the
+    /// listing reads `/Volumes`), else on the posting thread.
     public func start() {
         lock.lock()
         defer { lock.unlock() }
         guard observers.isEmpty else { return }
         observers = [NSWorkspace.didMountNotification, NSWorkspace.didUnmountNotification].map { name in
-            center.addObserver(forName: name, object: nil, queue: nil) { [weak self] _ in
+            center.addObserver(forName: name, object: nil, queue: queue) { [weak self] _ in
                 guard let self else { return }
                 self.onChange(self.currentCards())
             }

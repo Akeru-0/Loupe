@@ -12,9 +12,7 @@ public struct RootView: View {
             SidebarView(model: model)
                 .navigationSplitViewColumnWidth(min: 180, ideal: 230, max: 360)
         } detail: {
-            PhotoGridView(model: model)
-                .overlay { if model.photoSections.isEmpty { DetailPlaceholder(model: model) } }
-                .overlay { if model.viewerPhotoID != nil { PhotoViewer(model: model) } }
+            detail
                 .toolbar { LibraryToolbar(model: model) }
                 .navigationTitle(model.selectedTitle)
         }
@@ -40,6 +38,20 @@ public struct RootView: View {
             }
         }
         .frame(minWidth: 900, minHeight: 600)
+    }
+
+    /// The selected card's import window replaces the grid.
+    @ViewBuilder private var detail: some View {
+        if let importModel = model.importModel {
+            ImportView(model: model, importModel: importModel)
+        } else if let id = model.selectedItemID, model.card(forItemID: id) != nil {
+            ProgressView("Opening the library…")  // the import window needs the library
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            PhotoGridView(model: model)
+                .overlay { if model.photoSections.isEmpty { DetailPlaceholder(model: model) } }
+                .overlay { if model.viewerPhotoID != nil { PhotoViewer(model: model) } }
+        }
     }
 }
 

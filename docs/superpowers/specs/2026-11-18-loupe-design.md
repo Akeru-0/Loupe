@@ -247,16 +247,42 @@ share sheet, or can be dragged out.
 
 ### Import (SD card / camera)
 
-- Detect mounted volumes with a `DCIM` folder (plus ImageCaptureCore for
-  USB-connected cameras). Optionally auto-open the import window.
-- The grid of card contents groups RAW+JPEG pairs. Already-imported items are
-  greyed out (matched by a content hash, recorded per import). The default is
-  "Import All New".
-- Copy to `~/Pictures/YYYY/YYYY-MM-DD/` (pattern configurable), keeping
-  original filenames. Name collisions get a suffix, never an overwrite.
-- Verify each copy by checksum before marking it imported.
-- After import: optionally eject; optionally delete from the card (off by
-  default, only verified files).
+Decided 2026-11-18 (supersedes the first draft of this section):
+
+- Mounted volumes with a `DCIM` folder appear under **Devices** in the sidebar
+  (only while a card is present). The `/Volumes` listing runs off the main
+  thread. USB cameras via ImageCaptureCore are later work.
+- Selecting a card replaces the grid with the import window: the card's photos,
+  with RAW+JPEG pairs grouped as in the library. The header shows the number of
+  new photos, their files and size.
+- **Already on the Mac:** a card file is present if a file in the library root
+  tree, or in the Apple Photos library (`<root>/Photos Library.photoslibrary/
+  originals`, when it exists and is readable), has the same size and then the
+  same SHA-256. Library hashes are cached in the index. A photo is "On Mac"
+  (dimmed, badged, not importable) when all its media files are present. If the
+  Photos library can't be read (no Full Disk Access), a notice says so and
+  files only in Photos count as new.
+- **Import All New** is the default; **Import Selected** imports the selected
+  new photos.
+- **Destination picker:** Unsorted (the library root), any album from the album
+  tree, or New Album… — a name plus an optional group, which defaults to the
+  current year (`2026/<name>`). Missing folders are created. The last
+  destination is remembered.
+- Copies keep the original file names; a name collision gets a ` (n)` suffix,
+  never an overwrite. Each file is copied to a hidden temp name, verified by
+  SHA-256 re-read from disk, then renamed into place. Each photo is all or
+  nothing. There must be room for the import plus 5 %.
+- **One import at a time:** the library refuses a second concurrent import
+  ("An import is already running"), and the Import buttons are disabled while
+  one runs. Listing, the duplicate check and the copy all run off the main
+  thread, with progress and Cancel. An import keeps running if another sidebar
+  item is selected.
+- **The card is never written.** Card files are only read (listing, hashing,
+  copying, thumbnails; thumbnails are cached in the normal thumbnail
+  directory). The library may not be on the card's volume, and an import
+  destination may not be a symlink or lead outside the library.
+- After an import: a summary (imported, skipped, failed with reasons), **Show
+  Album**, and **Eject**. Deleting from the card is not offered.
 
 ### Faces (local)
 

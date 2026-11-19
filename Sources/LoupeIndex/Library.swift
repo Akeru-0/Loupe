@@ -24,6 +24,8 @@ public actor Library {
     private var watcher: FolderWatcher?
     /// Set by `stop()`: watcher callbacks still queued afterwards are ignored.
     private var isStopped = false
+    /// Held by the one import running on this library (`beginImport`/`endImport`).
+    private var isImporting = false
 
     // Actor reentrancy: every await inside scan/apply work could let another call in, so they queue here.
     private var busy = false
@@ -479,6 +481,16 @@ public actor Library {
         }
         return try outcome.get()
     }
+
+    /// Claims the library's single import slot: imports stage files under fixed temp names, so two at once could
+    /// clobber each other's copies. Returns false if an import is already running. Pair with `endImport()`.
+    public func beginImport() -> Bool {
+        guard !isImporting else { return false }
+        isImporting = true
+        return true
+    }
+
+    public func endImport() { isImporting = false }
 
     private func validateFolderName(_ name: String) throws {
         let invalid = name.isEmpty || name == "." || name == ".." || name.hasPrefix(".")

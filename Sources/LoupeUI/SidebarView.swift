@@ -7,7 +7,7 @@ struct SidebarView: View {
     var body: some View {
         List(selection: $model.selectedItemID) {
             // Albums stays even when empty: its header's menu creates the first album.
-            ForEach(model.sidebar.filter { !$0.items.isEmpty || $0.id == "albums" }) { group in
+            ForEach(model.sidebarGroups.filter { !$0.items.isEmpty || $0.id == "albums" }) { group in
                 if let title = group.title {
                     Section {
                         rows(group.items)

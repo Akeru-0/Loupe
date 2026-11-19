@@ -2,6 +2,7 @@ import AppKit
 import Foundation
 import LoupeCore
 import LoupeFeatures
+import LoupeImport
 import LoupeIndex
 import Observation
 import UniformTypeIdentifiers
@@ -79,6 +80,12 @@ public struct SidebarGroup: Identifiable, Sendable {
     public private(set) var lenses: [String] = []
     public private(set) var isScanning = false
     public private(set) var log: [LogEntry] = []
+    /// Mounted camera cards, shown under Devices.
+    public private(set) var cards: [Card] = []
+    /// The import window of the selected card (it replaces the grid).
+    private(set) var importModel: ImportModel?
+    /// An import that keeps running after another sidebar item was selected.
+    private(set) var backgroundImport: ImportModel?
 
     /// The grid's thumbnail memory cache, so the viewer can show a thumbnail instantly.
     @ObservationIgnored var thumbnailLoader: ThumbnailLoader?
@@ -94,6 +101,7 @@ public struct SidebarGroup: Identifiable, Sendable {
     @ObservationIgnored private var observers: [any NSObjectProtocol] = []
     /// Set by `closeViewer()`, taken once by the grid; any other change of `viewerPhotoID` clears it.
     @ObservationIgnored private var closedViewerPhotoID: Int64?
+    @ObservationIgnored private var cardDetector: CardDetector?
 
     public init(
         preferences: any PreferenceStore = UserDefaultsStore.standard,
@@ -147,6 +155,7 @@ public struct SidebarGroup: Identifiable, Sendable {
                 MainActor.assumeIsolated { self?.refreshSidebar() }
             })
         }
+        startCardDetection()
         openLibrary()
     }
 
@@ -187,6 +196,7 @@ public struct SidebarGroup: Identifiable, Sendable {
         photoSections = []
         viewerPhotoID = nil
         isScanning = true
+        leaveImport()  // its engine belongs to the old library
 
         let settings = effectiveSettings
         let registry = registry
@@ -219,6 +229,7 @@ public struct SidebarGroup: Identifiable, Sendable {
             log("Opened \(settings.rootPath)")
             observeQuery()
             refreshSidebar()
+            if let id = selectedItemID, let card = card(forItemID: id) { showImport(for: card) }
             let started = Date()
             let report = await lib.start()
             guard gen == generation else { return }
@@ -264,6 +275,13 @@ public struct SidebarGroup: Identifiable, Sendable {
     }
 
     private func selectedItemChanged() {
+        if let id = selectedItemID, let card = card(forItemID: id) {
+            selection = []
+            viewerPhotoID = nil
+            showImport(for: card)
+            return
+        }
+        leaveImport()
         guard let id = selectedItemID, let item = item(withID: id) else { return }
         selection = []
         viewerPhotoID = nil
@@ -303,7 +321,7 @@ public struct SidebarGroup: Identifiable, Sendable {
                 for message in result.3 { log(message) }
                 if let id = selectedItemID, let item = item(withID: id) {
                     // A renamed or new album selected before it was listed, or an album that became a group.
-                    if query.scope != item.scope { query.scope = item.scope }
+                    if card(forItemID: id) == nil, query.scope != item.scope { query.scope = item.scope }
                 } else if selectedItemID != nil, !sidebarRefreshPending {
                     selectedItemID = "library"
                 }
@@ -323,7 +341,143 @@ public struct SidebarGroup: Identifiable, Sendable {
             }
             return nil
         }
-        return find(sidebar.flatMap(\.items))
+        return find(sidebarGroups.flatMap(\.items))
+    }
+
+    /// The sidebar as shown: the sections, with Devices (only while there are cards) after the top section.
+    var sidebarGroups: [SidebarGroup] {
+        let devices = deviceCards.map {
+            SidebarItem(id: Self.deviceItemID($0), title: $0.name, systemImage: "sdcard", scope: .all)
+        }
+        guard !devices.isEmpty else { return sidebar }
+        var groups = sidebar
+        let at = groups.first?.title == nil ? 1 : 0
+        groups.insert(SidebarGroup(id: "devices", title: "Devices", items: devices), at: min(at, groups.count))
+        return groups
+    }
+
+    // MARK: - Import
+
+    /// Watches for camera cards. Workspace notifications arrive on the main thread, so the listing of `/Volumes`
+    /// runs on a background queue and only the result is published here, in order.
+    private func startCardDetection() {
+        let queue = OperationQueue()
+        queue.name = "Loupe card detection"
+        queue.maxConcurrentOperationCount = 1
+        queue.qualityOfService = .userInitiated
+        let publish: @Sendable ([Card]) -> Void = { [weak self] cards in
+            DispatchQueue.main.async { MainActor.assumeIsolated { self?.cardsChanged(cards) } }
+        }
+        let detector = CardDetector(queue: queue, onChange: publish)
+        detector.start()
+        queue.addOperation { publish(detector.currentCards()) }
+        cardDetector = detector
+    }
+
+    private func cardsChanged(_ new: [Card]) {
+        cards = new
+        // The shown card went away: leave its window, unless an import from it is still running (it ends with
+        // errors for the missing files, and its summary is shown then).
+        if let shown = importModel, !new.contains(shown.card), !shown.phase.isImporting { leaveImport() }
+        selectLibraryIfDeviceGone()
+    }
+
+    private func selectLibraryIfDeviceGone() {
+        if let id = selectedItemID, id.hasPrefix("device:"), card(forItemID: id) == nil { selectedItemID = "library" }
+    }
+
+    /// The cards under Devices: the mounted ones, plus the shown one while it is still importing after removal.
+    var deviceCards: [Card] {
+        guard let shown = importModel, shown.phase.isImporting, !cards.contains(shown.card) else { return cards }
+        return cards + [shown.card]
+    }
+
+    /// True while any import runs; every Import button is disabled then.
+    var isImporting: Bool {
+        importModel?.phase.isImporting == true || backgroundImport?.phase.isImporting == true
+    }
+
+    static func deviceItemID(_ card: Card) -> String { "device:" + card.volumeURL.path }
+
+    func card(forItemID id: String) -> Card? {
+        guard id.hasPrefix("device:") else { return nil }
+        return deviceCards.first { Self.deviceItemID($0) == id }
+    }
+
+    /// Shows the import window for `card`: the running import from it if there is one, else a fresh listing.
+    private func showImport(for card: Card) {
+        if importModel?.card == card { return }
+        leaveImport()
+        if let running = backgroundImport, running.card == card {
+            backgroundImport = nil
+            importModel = running
+            return
+        }
+        guard let library else { return }  // opening; shown once it is open
+        // Before the sidebar's first load nothing is known, so a remembered album is kept.
+        let albums = sidebar.isEmpty ? nil : Set(Self.albumPaths(sidebar.first { $0.id == "albums" }?.items ?? []))
+        let model = ImportModel(
+            card: card, engine: .live(library), preferences: preferences, albums: albums,
+            thumbnails: ThumbnailLoader(thumbnails: library.thumbnails),
+            onError: { [weak self] error in self?.present(error) })
+        model.onImportFinished = { [weak self] model in self?.importFinished(model) }
+        importModel = model
+        model.load()
+    }
+
+    /// Hides the import window. A running import goes on in the background; listing and checking stop.
+    private func leaveImport() {
+        guard let shown = importModel else { return }
+        importModel = nil
+        if shown.phase.isImporting {
+            backgroundImport = shown
+        } else {
+            shown.stopLoading()
+        }
+    }
+
+    private func importFinished(_ model: ImportModel) {
+        guard case .done(let result) = model.phase else { return }
+        let summary = "Import from “\(model.card.name)”: \(ImportModel.summary(of: result))"
+        log(summary)
+        let failures = ImportModel.failures(of: result)
+        for line in failures { log(line) }
+        let cardGone = !cards.contains(model.card)
+        let shown = model === importModel
+        if model === backgroundImport { backgroundImport = nil }
+        // Nobody sees the window's summary: say what went wrong here.
+        if (!shown || cardGone), !failures.isEmpty || !result.skipped.isEmpty {
+            present(ImportUIError(([summary] + failures.prefix(10)).joined(separator: "\n")))
+        }
+        if shown, cardGone {
+            leaveImport()
+            selectLibraryIfDeviceGone()
+        }
+    }
+
+    /// Shows the album an import went into (`""`: Unsorted).
+    func showImported(folder: String) {
+        selectedItemID = folder.isEmpty ? "unsorted" : "folder:" + folder.precomposedStringWithCanonicalMapping
+    }
+
+    /// Ejects the card off the main thread (it waits for the disk); errors are presented.
+    func eject(_ card: Card) {
+        let url = card.volumeURL
+        Task {
+            let result = await Task.detached(priority: .userInitiated) {
+                Result { try NSWorkspace.shared.unmountAndEjectDevice(at: url) }
+            }.value
+            if case .failure(let error) = result {
+                present(ImportUIError("Couldn't eject “\(card.name)”: \(error.localizedDescription)"))
+            }
+        }
+    }
+
+    private static func albumPaths(_ items: [SidebarItem]) -> [String] {
+        items.flatMap { item -> [String] in
+            let mine = item.isAlbum ? item.albumFolder.map { [$0] } ?? [] : []
+            return mine + albumPaths(item.children)
+        }
     }
 
     // MARK: - ActionContext

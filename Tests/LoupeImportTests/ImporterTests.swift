@@ -267,4 +267,55 @@ private func makeLibrary(_ library: IndexedLibrary) throws -> Library {
         #expect(try lib.index.photo(key: "IMG_1") != nil)  // rescanned at the end
         #expect(try lib.index.metadata(ofPhoto: other).rating == 3)
     }
+
+    @Test func oneImportAtATime() async throws {
+        let library = try IndexedLibrary()
+        let volumes = try FakeVolumes()
+        let (_, groups) = try makeCard(volumes)
+        let lib = try makeLibrary(library)
+
+        // The first import holds its first copy until the second import has been refused.
+        let started = DispatchSemaphore(value: 0)
+        let gate = DispatchSemaphore(value: 0)
+        let first = Box(true)
+        let gated: Importer.Copier = { source, temp in
+            if first.value {
+                first.value = false
+                started.signal()
+                _ = gate.wait(timeout: .now() + 5)
+            }
+            return try Importer.streamCopy(source, temp)
+        }
+        let task = Task {
+            try await lib.importFiles(
+                ImportPlan(groups: groups, destinationFolder: "A"), progress: { _ in },
+                using: importer(library, index: lib.index, copier: gated))
+        }
+        await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+            DispatchQueue.global().async { _ = started.wait(timeout: .now() + 5); c.resume() }
+        }
+        await #expect {
+            try await lib.importFiles(
+                ImportPlan(groups: groups, destinationFolder: "B"), progress: { _ in },
+                using: importer(library, index: lib.index))
+        } throws: { error in
+            guard case ImportError.alreadyRunning = error else { return false }
+            return error.localizedDescription == "An import is already running. Wait for it to finish, then try again."
+        }
+        gate.signal()
+        let result = try await task.value
+        #expect(result.imported.sorted() == ["A/IMG_1.CR2", "A/IMG_1.JPG", "A/IMG_2.CR2"])
+        #expect(!FileManager.default.fileExists(atPath: library.root.appendingPathComponent("B").path))
+
+        // Released on every exit: after a refused destination, and after a finished import.
+        await #expect(throws: ImportError.self) {
+            try await lib.importFiles(
+                ImportPlan(groups: groups, destinationFolder: ".hidden"), progress: { _ in },
+                using: importer(library, index: lib.index))
+        }
+        let again = try await lib.importFiles(
+            ImportPlan(groups: groups, destinationFolder: "C"), progress: { _ in },
+            using: importer(library, index: lib.index))
+        #expect(again.imported.count == 3)
+    }
 }

@@ -28,7 +28,7 @@ let package = Package(
         ),
         .target(
             name: "LoupeUI",
-            dependencies: ["LoupeCore", "LoupeXMP", "LoupeMedia", "LoupeIndex", "LoupeFeatures"],
+            dependencies: ["LoupeCore", "LoupeXMP", "LoupeMedia", "LoupeIndex", "LoupeFeatures", "LoupeImport"],
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
         .target(name: "LoupeTestSupport", dependencies: ["LoupeCore"]),
@@ -42,7 +42,7 @@ let package = Package(
         .testTarget(name: "LoupeImportTests", dependencies: ["LoupeImport", "LoupeTestSupport"]),
         .testTarget(name: "LoupeIndexTests", dependencies: ["LoupeIndex", "LoupeTestSupport"]),
         .testTarget(name: "LoupeMediaTests", dependencies: ["LoupeMedia", "LoupeTestSupport"]),
-        .testTarget(name: "LoupeUITests", dependencies: ["LoupeUI", "LoupeTestSupport"]),
+        .testTarget(name: "LoupeUITests", dependencies: ["LoupeUI", "LoupeImport", "LoupeTestSupport"]),
         .testTarget(
             name: "LoupeXMPTests",
             dependencies: ["LoupeXMP", "LoupeTestSupport"],

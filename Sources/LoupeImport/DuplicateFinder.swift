@@ -38,6 +38,11 @@ public struct DuplicateReport: Sendable {
     /// Then files only in Photos are reported as new. True when no Photos library was given.
     public var photosLibraryChecked: Bool
 
+    public init(presentFiles: Set<URL>, photosLibraryChecked: Bool) {
+        self.presentFiles = presentFiles
+        self.photosLibraryChecked = photosLibraryChecked
+    }
+
     /// "On Mac": every media file of the group is present (sidecars do not count).
     public func isOnMac(_ group: PhotoGroup) -> Bool {
         group.versions.allSatisfy { presentFiles.contains($0.file.url) }
