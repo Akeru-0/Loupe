@@ -1,9 +1,10 @@
 import Foundation
 import ImageIO
 import LoupeCore
+import LoupeMedia
 import UniformTypeIdentifiers
 
-/// Renders a JPEG (orientation baked in, optionally downsized, never upscaled). Works for RAW too.
+/// Renders a JPEG (effective orientation baked in, optionally downsized, never upscaled). Works for RAW too.
 public struct JPEGExporter: ShareExporter {
     public let id: String
     public let title: String
@@ -31,7 +32,7 @@ public struct JPEGExporter: ShareExporter {
         ]
     }
 
-    public func export(_ file: URL, kind: VersionKind, removeLocation: Bool, into directory: URL) throws -> URL {
+    public func export(_ file: URL, kind: VersionKind, orientation: Int?, removeLocation: Bool, into directory: URL) throws -> URL {
         guard let source = CGImageSourceCreateWithURL(file as CFURL, nil) else { throw ShareExportError.unreadable(file) }
         let sourceProps = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any] ?? [:]
         let w = (sourceProps[kCGImagePropertyPixelWidth] as? Int) ?? 0
@@ -40,12 +41,7 @@ public struct JPEGExporter: ShareExporter {
         if let maxLongEdge { longEdge = longEdge > 0 ? min(longEdge, maxLongEdge) : maxLongEdge }
         guard longEdge > 0 else { throw ShareExportError.unreadable(file) }
 
-        let thumbOptions: [CFString: Any] = [
-            kCGImageSourceCreateThumbnailFromImageAlways: true,
-            kCGImageSourceCreateThumbnailWithTransform: true,
-            kCGImageSourceThumbnailMaxPixelSize: longEdge,
-        ]
-        guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, thumbOptions as CFDictionary)
+        guard let image = ImageLoader.image(from: source, maxPixelSize: longEdge, orientation: orientation)
         else { throw ShareExportError.unreadable(file) }
 
         var props: [CFString: Any] = [

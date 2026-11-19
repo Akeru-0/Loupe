@@ -159,14 +159,30 @@ public actor Library {
         if track { await guardIfSidecarChangedSinceStamp(photoID: id) }
         let sidecarNow = group.sidecarURLForWriting
         let before = try (try? XMPDocument(data: Data(contentsOf: sidecarNow)).metadata) ?? index.metadata(ofPhoto: id)
+        let oldOverride = try index.photo(id: id)?.orientationOverride
         let metadata = try SidecarIO.write(changes, to: group)  // throws for malformed sidecars, never writes them
         let sidecar = group.sidecarURLForWriting
         let stamp = (try? fm.attributesOfItem(atPath: sidecar.path))?[.modificationDate] as? Date
-        try await index.dbPool.write { db in
+        // Rotated: the shown width and height of every version may have swapped.
+        var dimensions: [(version: Int64, info: MediaInfo)] = []
+        if metadata.orientation != oldOverride {
+            for v in try index.versions(ofPhoto: id) {
+                guard let vid = v.id else { continue }
+                dimensions.append((vid, await MediaInfoReader.read(v.url(in: root), kind: v.kind, orientation: metadata.orientation)))
+            }
+        }
+        try await index.dbPool.write { [dimensions] db in
             try db.execute(
-                sql: "UPDATE photo SET rating = ?, isFavorite = ?, hasLightCraftEdits = ?, sidecarModified = ? WHERE id = ?",
+                sql: """
+                    UPDATE photo SET rating = ?, isFavorite = ?, hasLightCraftEdits = ?, sidecarModified = ?,
+                    orientationOverride = ? WHERE id = ?
+                    """,
                 arguments: [metadata.rating, metadata.isFavorite, metadata.hasLightCraftEdits,
-                            stamp?.timeIntervalSince1970, id])
+                            stamp?.timeIntervalSince1970, metadata.orientation, id])
+            for (vid, info) in dimensions where info.pixelWidth != nil {
+                try db.execute(sql: "UPDATE version SET pixelWidth = ?, pixelHeight = ? WHERE id = ?",
+                               arguments: [info.pixelWidth, info.pixelHeight, vid])
+            }
             try db.execute(sql: "DELETE FROM photo_tag WHERE photoId = ?", arguments: [id])
             try db.execute(sql: "DELETE FROM photo_album WHERE photoId = ?", arguments: [id])
             for t in metadata.tags {
@@ -260,6 +276,7 @@ public actor Library {
         case .setFavorite: "favorite"
         case .addTag(let t), .removeTag(let t): "tag \(t)"
         case .addToAlbum(let a), .removeFromAlbum(let a): "album \(a)"
+        case .rotate: "orientation"
         }
     }
 

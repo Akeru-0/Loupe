@@ -26,3 +26,10 @@ In LightCraft's Export dialog: destination **Same folder as original**, file nam
 LightCraft (`ai.storyteller.lightcraft`) declares no document types, so `NSWorkspace.open(_:withApplicationAt:)` fails and it never appears in `urlsForApplications(toOpen:)`. When the chosen editor (default or a child entry) is LightCraft, Loupe's "Edit" therefore does not open the files. It reveals the target files in Finder, activates/launches LightCraft, and logs "LightCraft can't open files directly — drag the selected file into LightCraft". The default editor is always listed first in the Edit submenu, even when the system doesn't list it.
 
 Driving LightCraft's control channel (`library.import`, `photo.readMetadataFromFile` over `--control PORT`) is deferred to a later phase.
+
+## Rotation via `tiff:Orientation` (Task 24)
+
+Loupe's Rotate writes the standard XMP property `tiff:Orientation` (namespace `http://ns.adobe.com/tiff/1.0/`, EXIF values 1–8) into the shared `<stem>.xmp`, as an element in the first `rdf:Description` or updated in place where it already is. Per the upstream `docs/xmp-interop.md` (above), LightCraft does not own `tiff:` fields and keeps unknown/foreign fields byte for byte, so a LightCraft save should not remove or revert it, and the stale-revert guard does not cover this field. LightCraft keeps its own orientation inside `lc:settings` (`"orientation":"Normal"`, plus `crop.flip_h`/`flip_v`), which Loupe never touches.
+
+**Owner check:** does LightCraft honour `tiff:Orientation` from the sidecar? Rotate a photo in Loupe, then import it into LightCraft (or have LightCraft re-read the sidecar, `photo.readMetadataFromFile`) and check whether LightCraft shows it turned. Also check that a later LightCraft save keeps `tiff:Orientation` in the sidecar. Unverified as of 2026-11-19.
+

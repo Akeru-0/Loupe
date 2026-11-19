@@ -85,6 +85,21 @@ enum Schema {
                 );
                 """)
         }
+        migrator.registerMigration("v4") { db in
+            // Rotation: the sidecar's tiff:Orientation, when it overrides the files' own orientation.
+            try db.execute(sql: "ALTER TABLE photo ADD COLUMN orientationOverride INTEGER")
+            try markSidecarPhotosForRescan(db)
+        }
         return migrator
+    }
+
+    static let rescanMarker = "rescan"
+
+    /// Photos with a sidecar are re-read on the next scan, so a `tiff:Orientation` written before v4 is picked up.
+    /// No real fingerprint equals the marker (they all contain "@"), so the scanner sees those photos as changed.
+    static func markSidecarPhotosForRescan(_ db: Database) throws {
+        try db.execute(
+            sql: "UPDATE photo SET legacySidecarFingerprint = ? WHERE sidecarModified IS NOT NULL OR legacySidecarFingerprint IS NOT NULL",
+            arguments: [rescanMarker])
     }
 }

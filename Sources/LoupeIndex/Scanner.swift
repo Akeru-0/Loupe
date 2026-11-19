@@ -349,7 +349,7 @@ public final class Scanner: Sendable {
         }
 
         var infos: [MediaInfo] = []
-        for v in group.versions { infos.append(await MediaInfoReader.read(v.file.url, kind: v.kind)) }
+        for v in group.versions { infos.append(await MediaInfoReader.read(v.file.url, kind: v.kind, orientation: metadata.orientation)) }
         let displayIndex = group.versions.firstIndex(of: display) ?? 0
         let displayInfo = infos[displayIndex]
         let captureDate = displayInfo.captureDate ?? infos.compactMap(\.captureDate).first ?? display.file.created
@@ -363,7 +363,7 @@ public final class Scanner: Sendable {
             cameraModel: camera, lensModel: lens,
             hasRaw: group.versions.contains { $0.kind == .raw },
             hasVideo: group.versions.contains { $0.kind == .video || $0.kind == .live },
-            sidecarModified: sidecarModified, legacySidecarFingerprint: legacy)
+            sidecarModified: sidecarModified, legacySidecarFingerprint: legacy, orientationOverride: metadata.orientation)
 
         return try await index.dbPool.write { [photo, group, infos, metadata, display] db in
             var photo = photo

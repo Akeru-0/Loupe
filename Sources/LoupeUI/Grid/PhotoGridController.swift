@@ -610,7 +610,7 @@ import Observation
         guard let loader else { return }
         for path in indexPaths {
             if let id = dataSource.itemIdentifier(for: path), let info = infos[id] {
-                loader.prefetch(info.displayFile, kind: info.displayKind)
+                loader.prefetch(info.displayFile, kind: info.displayKind, orientation: info.orientationOverride)
             }
         }
     }
@@ -618,7 +618,9 @@ import Observation
     func collectionView(_ collectionView: NSCollectionView, cancelPrefetchingForItemsAt indexPaths: [IndexPath]) {
         guard let loader else { return }
         for path in indexPaths {
-            if let id = dataSource.itemIdentifier(for: path), let info = infos[id] { loader.cancelPrefetch(info.displayFile) }
+            if let id = dataSource.itemIdentifier(for: path), let info = infos[id] {
+                loader.cancelPrefetch(info.displayFile, orientation: info.orientationOverride)
+            }
         }
     }
 

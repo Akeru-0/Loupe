@@ -34,13 +34,23 @@ extension XMPDocument {
         return data
     }
 
-    /// Applies the changes to the parsed tree, touching only `xmp:Rating`, `dc:subject` and
-    /// `lr:hierarchicalSubject`. Everything else in the tree is left as it was.
-    public mutating func apply(_ changes: [MetadataChange]) {
+    /// Applies the changes to the parsed tree, touching only `xmp:Rating`, `dc:subject`,
+    /// `lr:hierarchicalSubject` and `tiff:Orientation`. Everything else in the tree is left as it was.
+    /// `embeddedOrientation` is the image file's own orientation; `.rotate` turns from the sidecar's value, else
+    /// from that, and removes `tiff:Orientation` when the result is what the file already says.
+    public mutating func apply(_ changes: [MetadataChange], embeddedOrientation: Int? = nil) {
         // XMLDocument is a reference type; never mutate a tree another copy of this value shares.
         document = document.copy() as? XMLDocument ?? document
         var editor = Editor(document: document)
         for change in changes { editor.apply(change) }
+        editor.finishRotation(embedded: embeddedOrientation)
+        if let fresh = try? XMPDocument(data: serialized()) { metadata = fresh.metadata }
+    }
+
+    /// Sets (or with nil removes) `tiff:Orientation` as is, e.g. to carry a legacy sidecar's value over.
+    mutating func setOrientation(_ value: Int?) {
+        document = document.copy() as? XMLDocument ?? document
+        Editor(document: document).setOrientation(value)
         if let fresh = try? XMPDocument(data: serialized()) { metadata = fresh.metadata }
     }
 }
@@ -48,6 +58,8 @@ extension XMPDocument {
 private struct Editor {
     let document: XMLDocument
     let dc = XMPNamespaces.dc, lr = XMPNamespaces.lr
+    /// Net clockwise quarter turns asked for; written once, after all changes, by `finishRotation`.
+    private var quarterTurns = 0
 
     var descriptions: [XMLElement] {
         guard let root = document.rootElement() else { return [] }
@@ -68,7 +80,67 @@ private struct Editor {
             add(Keywords.albumPrefix + a, dc, "subject")
             add(Keywords.albumPrefix + a, lr, "hierarchicalSubject")
         case .removeFromAlbum(let a): removeAlbum(a)
+        case .rotate(let clockwise): quarterTurns += clockwise ? 1 : -1
         }
+    }
+
+    // MARK: Orientation
+
+    /// Writes the net rotation once, so turns that cancel out leave the tree (and the file) untouched.
+    func finishRotation(embedded: Int?) {
+        let turns = ((quarterTurns % 4) + 4) % 4
+        guard turns > 0 else { return }
+        let own = Orientation.effective(override: nil, embedded: embedded)
+        var result = Orientation.effective(override: currentOrientation(), embedded: embedded)
+        for _ in 0..<turns { result = result.rotated(clockwise: true) }
+        // Back to what the file says by itself: no override, rather than a redundant one.
+        setOrientation(result == own ? nil : result.exif)
+    }
+
+    /// The first valid `tiff:Orientation`, as the reader sees it.
+    private func currentOrientation() -> Int? {
+        for d in descriptions {
+            for attr in d.attributes ?? [] where attr.uri == XMPNamespaces.tiff && attr.localName == "Orientation" {
+                if let v = XMPDocument.orientationValue(attr.stringValue ?? "") { return v }
+            }
+            for case let child as XMLElement in d.children ?? []
+            where XMPDocument.isElement(child, XMPNamespaces.tiff, "Orientation") {
+                if let v = XMPDocument.orientationValue(child.stringValue ?? "") { return v }
+            }
+        }
+        return nil
+    }
+
+    /// Like the rating: updated in place in attribute or element form, else added to the first Description.
+    /// nil removes every occurrence.
+    func setOrientation(_ value: Int?) {
+        let text = value.map(String.init)
+        var found = false
+        for d in descriptions {
+            for attr in d.attributes ?? [] where attr.uri == XMPNamespaces.tiff && attr.localName == "Orientation" {
+                found = true
+                if let text {
+                    if attr.stringValue != text { attr.stringValue = text }
+                } else if let name = attr.name {
+                    d.removeAttribute(forName: name)
+                }
+            }
+            for case let child as XMLElement in d.children ?? []
+            where XMPDocument.isElement(child, XMPNamespaces.tiff, "Orientation") {
+                found = true
+                if let text {
+                    if (child.stringValue ?? "").trimmingCharacters(in: .whitespacesAndNewlines) != text {
+                        child.stringValue = text
+                    }
+                } else {
+                    detach(child)
+                }
+            }
+        }
+        guard !found, let text, let d = firstDescription() else { return }
+        let el = XMLElement(name: qualifiedName(XMPNamespaces.tiff, "tiff", "Orientation", in: d), uri: XMPNamespaces.tiff)
+        el.stringValue = text
+        d.addChild(el)
     }
 
     // MARK: Rating
@@ -187,9 +259,10 @@ private struct Editor {
 
     // MARK: Tree helpers
 
-    /// Removes a node together with the indentation that preceded it.
+    /// Removes a node together with the indentation that preceded it. A last child keeps the text before it:
+    /// that is the parent's closing indentation (a node Loupe appended comes after it).
     private func detach(_ node: XMLNode) {
-        if let parent = node.parent as? XMLElement, node.index > 0,
+        if let parent = node.parent as? XMLElement, node.index > 0, node.index < parent.childCount - 1,
             let prev = parent.child(at: node.index - 1), prev.kind == .text,
             (prev.stringValue ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         {

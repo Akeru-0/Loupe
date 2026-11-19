@@ -18,12 +18,9 @@ public struct ShareAction: PhotoAction {
         self.defaults = defaults
     }
 
-    private static func files(for selection: ActionSelection) -> [(url: URL, kind: VersionKind)] {
-        if let focused = selection.focusedVersion { return [(focused.url(in: selection.root), focused.kind)] }
-        return selection.photos.compactMap { photo in
-            guard let id = photo.id, let display = selection.versions[id]?.first(where: \.isDisplay) else { return nil }
-            return (display.url(in: selection.root), display.kind)
-        }
+    /// Each file with its photo's orientation override.
+    private static func files(for selection: ActionSelection) -> [(url: URL, kind: VersionKind, orientation: Int?)] {
+        selection.targets().map { ($0.url, $0.version.kind, $0.photo?.orientationOverride) }
     }
 
     @MainActor public func entries(for selection: ActionSelection) -> [ActionMenuEntry] {
@@ -39,7 +36,7 @@ public struct ShareAction: PhotoAction {
             var urls: [URL] = []
             for file in files {
                 do {
-                    urls.append(try exporter.export(file.url, kind: file.kind, removeLocation: removeLocation, into: outputDirectory))
+                    urls.append(try exporter.export(file.url, kind: file.kind, orientation: file.orientation, removeLocation: removeLocation, into: outputDirectory))
                 } catch {
                     context.present(error)
                 }
@@ -49,10 +46,16 @@ public struct ShareAction: PhotoAction {
 
         var children: [ActionMenuEntry] = exporters.map { exporter in
             var title = exporter.title
-            // Formats that can't be stripped without re-encoding are shared as-is.
-            if exporter is OriginalExporter, removeLocation,
-                files.contains(where: { !OriginalExporter.canStripLocation($0.url) }) {
-                title += " (location kept)"
+            // Formats that can't be re-muxed without re-encoding are shared as-is.
+            if exporter is OriginalExporter {
+                var notes: [String] = []
+                if removeLocation, files.contains(where: { !OriginalExporter.canStripLocation($0.url) }) {
+                    notes.append("location kept")
+                }
+                if files.contains(where: { $0.orientation != nil && !OriginalExporter.canSetOrientation($0.url) }) {
+                    notes.append("rotation not applied")
+                }
+                if !notes.isEmpty { title += " (\(notes.joined(separator: ", ")))" }
             }
             return ActionMenuEntry(
                 id: "share.\(exporter.id)", title: title,

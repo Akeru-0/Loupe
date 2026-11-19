@@ -20,13 +20,15 @@ public struct PhotoRecord: Codable, Hashable, Sendable, Identifiable {
     public var sidecarModified: Date?
     /// Names and mtimes of legacy (`<file>.<ext>.xmp`) sidecars, so changes to them are noticed.
     public var legacySidecarFingerprint: String?
+    /// The sidecar's `tiff:Orientation`, overriding the files' own orientation; nil when there is none.
+    public var orientationOverride: Int?
 
     public init(
         id: Int64? = nil, locationId: String, folderPath: String, stem: String, stemKey: String,
         captureDate: Date? = nil, addedDate: Date, rating: Int = 0, isFavorite: Bool = false,
         hasLightCraftEdits: Bool = false, cameraModel: String? = nil, lensModel: String? = nil,
         hasRaw: Bool = false, hasVideo: Bool = false, sidecarModified: Date? = nil,
-        legacySidecarFingerprint: String? = nil
+        legacySidecarFingerprint: String? = nil, orientationOverride: Int? = nil
     ) {
         self.id = id
         self.locationId = locationId
@@ -44,6 +46,7 @@ public struct PhotoRecord: Codable, Hashable, Sendable, Identifiable {
         self.hasVideo = hasVideo
         self.sidecarModified = sidecarModified
         self.legacySidecarFingerprint = legacySidecarFingerprint
+        self.orientationOverride = orientationOverride
     }
 
     public var key: String { folderPath.isEmpty ? stem : folderPath + "/" + stem }

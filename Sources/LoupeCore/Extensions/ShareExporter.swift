@@ -5,5 +5,6 @@ public protocol ShareExporter: Sendable {
     var id: String { get }
     var title: String { get }
     func canExport(_ kind: VersionKind) -> Bool
-    func export(_ file: URL, kind: VersionKind, removeLocation: Bool, into directory: URL) throws -> URL
+    /// `orientation` is the photo's override (the sidecar's `tiff:Orientation`), nil when the file's own applies.
+    func export(_ file: URL, kind: VersionKind, orientation: Int?, removeLocation: Bool, into directory: URL) throws -> URL
 }

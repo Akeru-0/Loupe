@@ -18,15 +18,21 @@ public enum SidecarIO {
         for legacy in group.legacySidecars {
             if let data = try? Data(contentsOf: legacy), let doc = try? XMPDocument(data: data) { return doc.metadata }
         }
-        return EmbeddedMetadataReader.metadata(in: group.displayVersion.file.url) ?? PhotoMetadata()
+        var embedded = EmbeddedMetadataReader.metadata(in: group.displayVersion.file.url) ?? PhotoMetadata()
+        // A file's own XMP describes the file itself; only a sidecar overrides its orientation.
+        embedded.orientation = nil
+        return embedded
     }
 
     @discardableResult
     public static func write(_ changes: [MetadataChange], to group: PhotoGroup) throws -> PhotoMetadata {
+        // Only read (never written): what the display file says by itself, for turning from it.
+        let embedded = changes.contains { if case .rotate = $0 { true } else { false } }
+            ? EmbeddedMetadataReader.orientation(in: group.displayVersion.file.url) : nil
         if let url = existingSidecar(group) {
-            return try update(existing: url, changes)
+            return try update(existing: url, changes, embeddedOrientation: embedded)
         }
-        return try create(group, changes)
+        return try create(group, changes, embeddedOrientation: embedded)
     }
 
     // MARK: -
@@ -35,14 +41,16 @@ public enum SidecarIO {
         (try? FileManager.default.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date
     }
 
-    private static func update(existing url: URL, _ changes: [MetadataChange]) throws -> PhotoMetadata {
+    private static func update(
+        existing url: URL, _ changes: [MetadataChange], embeddedOrientation: Int?
+    ) throws -> PhotoMetadata {
         var retried = false
         while true {
             let stamp = modificationDate(url)
             var doc = try XMPDocument(data: Data(contentsOf: url))
             guard doc.hasRDF else { throw XMPError.malformed("no rdf:RDF element") }
             let before = doc.serialized()
-            doc.apply(changes)
+            doc.apply(changes, embeddedOrientation: embeddedOrientation)
             let after = doc.serialized()
             if after == before { return doc.metadata }
             // Someone (LightCraft, Finder) may have rewritten it since we read; redo once on the fresh bytes.
@@ -56,7 +64,9 @@ public enum SidecarIO {
         }
     }
 
-    private static func create(_ group: PhotoGroup, _ changes: [MetadataChange]) throws -> PhotoMetadata {
+    private static func create(
+        _ group: PhotoGroup, _ changes: [MetadataChange], embeddedOrientation: Int?
+    ) throws -> PhotoMetadata {
         let seed = try read(group)
         var doc = XMPDocument.empty()
         var seeding: [MetadataChange] = []
@@ -65,7 +75,8 @@ public enum SidecarIO {
         seeding += seed.albums.map { .addToAlbum($0) }
         if seed.isFavorite { seeding.append(.setFavorite(true)) }
         doc.apply(seeding)
-        doc.apply(changes)
+        if let orientation = seed.orientation { doc.setOrientation(orientation) }  // from a legacy sidecar
+        doc.apply(changes, embeddedOrientation: embeddedOrientation)
 
         var result = doc.metadata
         result.hasLightCraftEdits = seed.hasLightCraftEdits

@@ -6,4 +6,5 @@ enum XMPNamespaces {
     static let dc = "http://purl.org/dc/elements/1.1/"
     static let lr = "http://ns.adobe.com/lightroom/1.0/"
     static let lc = "http://ns.lightcraft.app/lc/1.0/"
+    static let tiff = "http://ns.adobe.com/tiff/1.0/"
 }

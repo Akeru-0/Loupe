@@ -10,12 +10,14 @@ public struct CellInfo: Hashable, Sendable {
     public var rating: Int
     public var isFavorite: Bool
     public var hasLightCraftEdits: Bool
+    /// The sidecar's `tiff:Orientation`, if it overrides the display file's own orientation.
+    public var orientationOverride: Int?
     /// Bottom-left labels: the photo's kinds ("RAW", "JPG", "EDIT", "LIVE") or a video's duration.
     public var badges: [String]
 
     public init(
         id: Int64, displayFile: MediaFile, displayKind: VersionKind, rating: Int, isFavorite: Bool,
-        hasLightCraftEdits: Bool, badges: [String]
+        hasLightCraftEdits: Bool, orientationOverride: Int? = nil, badges: [String]
     ) {
         self.id = id
         self.displayFile = displayFile
@@ -23,6 +25,7 @@ public struct CellInfo: Hashable, Sendable {
         self.rating = rating
         self.isFavorite = isFavorite
         self.hasLightCraftEdits = hasLightCraftEdits
+        self.orientationOverride = orientationOverride
         self.badges = badges
     }
 
@@ -66,7 +69,7 @@ extension LibraryIndex {
         let (photos, versions) = try dbPool.read { db in
             let list = Self.jsonList(ids)
             let photos = try GRDB.Row.fetchAll(db, sql: """
-                SELECT id, rating, isFavorite, hasLightCraftEdits FROM photo
+                SELECT id, rating, isFavorite, hasLightCraftEdits, orientationOverride FROM photo
                 WHERE id IN (SELECT value FROM json_each(?))
                 """, arguments: [list])
             let versions = try VersionRecord.fetchAll(db, sql: """
@@ -85,7 +88,7 @@ extension LibraryIndex {
                 displayFile: MediaFile(url: display.url(in: root), size: display.size, modified: display.modified,
                                        created: display.modified),
                 displayKind: display.kind, rating: row["rating"], isFavorite: row["isFavorite"],
-                hasLightCraftEdits: row["hasLightCraftEdits"], badges: CellInfo.badges(versions: vs, display: display))
+                hasLightCraftEdits: row["hasLightCraftEdits"], orientationOverride: row["orientationOverride"], badges: CellInfo.badges(versions: vs, display: display))
         }
         return result
     }

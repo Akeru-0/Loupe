@@ -30,6 +30,7 @@ public struct XMPDocument {
         let descriptions = Self.descendants(of: root).filter { Self.isElement($0, XMPNamespaces.rdf, "Description") }
 
         var rating: Int?
+        var orientation: Int?
         var subjects: [String] = []
         var hierarchical: [String] = []
         var hasEdits = false
@@ -39,6 +40,9 @@ public struct XMPDocument {
             if (d.attributes ?? []).contains(where: { $0.uri == XMPNamespaces.lc }) { hasLC = true }
             if rating == nil, let text = Self.property(d, XMPNamespaces.xmp, "Rating") {
                 rating = Int(text.trimmingCharacters(in: .whitespacesAndNewlines))
+            }
+            if orientation == nil, let text = Self.property(d, XMPNamespaces.tiff, "Orientation") {
+                orientation = Self.orientationValue(text)
             }
             for child in d.children?.compactMap({ $0 as? XMLElement }) ?? [] {
                 if child.uri == XMPNamespaces.lc { hasLC = true }
@@ -77,10 +81,15 @@ public struct XMPDocument {
         let valid = rating.flatMap { (1...5).contains($0) ? $0 : nil } ?? 0
         metadata = PhotoMetadata(
             rating: valid, tags: Self.unique(tags), albums: albums,
-            isFavorite: isFavorite, hasLightCraftEdits: hasEdits)
+            isFavorite: isFavorite, hasLightCraftEdits: hasEdits, orientation: orientation)
     }
 
     // MARK: - Helpers
+
+    /// An EXIF orientation 1…8, or nil for anything else.
+    static func orientationValue(_ text: String) -> Int? {
+        Int(text.trimmingCharacters(in: .whitespacesAndNewlines)).flatMap { (1...8).contains($0) ? $0 : nil }
+    }
 
     static func key(_ s: String) -> String {
         s.precomposedStringWithCanonicalMapping.lowercased()

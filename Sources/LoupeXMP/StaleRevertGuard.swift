@@ -63,6 +63,9 @@ public enum StaleRevertGuard {
             case .removeFromAlbum(let a):
                 entry = Pending(field: "album:" + a, value: absent, previous: flag(contains(state.albums, a)))
                 state.albums.removeAll { key($0) == key(a) }
+            case .rotate:
+                // LightCraft does not own tiff:Orientation and keeps it byte for byte, so there is nothing to guard.
+                entry = nil
             }
             if let entry, entry.value != entry.previous { result = merge(result, with: [entry]) }
         }

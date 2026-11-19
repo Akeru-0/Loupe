@@ -447,3 +447,97 @@ private final class Notes: @unchecked Sendable {
         #expect(notes.changes == 1)
     }
 }
+
+@Suite struct OrientationIndexTests {
+    @Test func scannerAndApplyStoreOverride() async throws {
+        let e = try Env()
+        let jpeg = try e.lib.addJPEG("a/IMG_1.jpg", width: 400, height: 300)
+        let sidecar = """
+            <x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">\
+            <rdf:Description xmlns:tiff="http://ns.adobe.com/tiff/1.0/"><tiff:Orientation>6</tiff:Orientation>\
+            </rdf:Description></rdf:RDF></x:xmpmeta>
+            """
+        try e.lib.addFile("a/IMG_1.xmp", bytes: Data(sidecar.utf8))
+        let imageBytes = try Data(contentsOf: jpeg)
+        _ = await e.library.initialSync()
+        let id = try e.id("a/IMG_1")
+
+        func check(_ override: Int?, _ w: Int, _ h: Int) throws {
+            #expect(try e.library.index.photo(id: id)?.orientationOverride == override)
+            let version = try #require(try e.library.index.versions(ofPhoto: id).first)
+            #expect(version.pixelWidth == w && version.pixelHeight == h)
+            let cell = try e.library.index.cellInfo(ids: [id], root: e.lib.root)[id]
+            #expect(cell?.orientationOverride == override)
+        }
+        try check(6, 300, 400)
+
+        #expect(await e.library.apply([.rotate(clockwise: true)], to: [id]).isEmpty)
+        try check(3, 400, 300)
+        #expect(await e.library.apply([.rotate(clockwise: true)], to: [id]).isEmpty)
+        try check(8, 300, 400)
+        // Back to the file's own orientation: the override goes.
+        #expect(await e.library.apply([.rotate(clockwise: true)], to: [id]).isEmpty)
+        try check(nil, 400, 300)
+        #expect(!(try e.sidecarText("a/IMG_1.xmp")).contains("Orientation"))
+
+        // The rotation is not something LightCraft could revert, so it leaves no pending entry.
+        let pending = try await e.library.index.dbPool.read { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM pending_edit WHERE photoId = ?", arguments: [id])
+        }
+        #expect(pending == 0)
+        #expect(try Data(contentsOf: jpeg) == imageBytes)
+
+        // A rescan reads the same override back.
+        #expect(await e.library.apply([.rotate(clockwise: false)], to: [id]).isEmpty)
+        _ = await e.library.initialSync()
+        try check(8, 300, 400)
+        #expect(try Data(contentsOf: jpeg) == imageBytes)
+    }
+
+    /// An index scanned before v4 has no override for a sidecar that already had `tiff:Orientation`.
+    @Test func migrationV4RereadsPhotosWithSidecars() async throws {
+        let dbURL = FileManager.default.temporaryDirectory.appendingPathComponent("loupe-v3-\(UUID().uuidString).sqlite")
+        defer { try? FileManager.default.removeItem(at: dbURL) }
+        let pool = try DatabasePool(path: dbURL.path)
+        try Schema.migrator().migrate(pool, upTo: "v3")
+        try await pool.write { db in
+            for (stem, sidecar) in [("withSidecar", 1000.0 as Double?), ("plain", nil)] {
+                try db.execute(sql: """
+                    INSERT INTO photo(locationId, folderPath, stem, stemKey, addedDate, sidecarModified)
+                    VALUES ('l', '', ?, ?, 0, ?)
+                    """, arguments: [stem, stem.lowercased(), sidecar])
+            }
+        }
+        try Schema.migrator().migrate(pool)
+        let rows = try await pool.read { db in
+            try Row.fetchAll(db, sql: "SELECT stem, legacySidecarFingerprint, orientationOverride FROM photo ORDER BY stem")
+                .map { ($0["stem"] as String, $0["legacySidecarFingerprint"] as String?, $0["orientationOverride"] as Int?) }
+        }
+        #expect(rows.map(\.0) == ["plain", "withSidecar"])
+        #expect(rows[0].1 == nil)
+        #expect(rows[1].1 == Schema.rescanMarker)
+        #expect(rows.allSatisfy { $0.2 == nil })
+    }
+
+    @Test func markedPhotosPickUpTheOverrideOnTheNextScan() async throws {
+        let e = try Env()
+        try e.lib.addJPEG("a/IMG_1.jpg", width: 400, height: 300)
+        _ = await e.library.initialSync()
+        let id = try e.id("a/IMG_1")
+        // As if the sidecar had been written by another tool before v4 and the photo scanned then.
+        let sidecar = """
+            <x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">\
+            <rdf:Description xmlns:tiff="http://ns.adobe.com/tiff/1.0/" tiff:Orientation="8"/></rdf:RDF></x:xmpmeta>
+            """
+        try e.lib.addFile("a/IMG_1.xmp", bytes: Data(sidecar.utf8))
+        _ = await e.library.initialSync()
+        try await e.library.index.dbPool.write { db in
+            try db.execute(sql: "UPDATE photo SET orientationOverride = NULL WHERE id = ?", arguments: [id])
+            try Schema.markSidecarPhotosForRescan(db)
+        }
+        _ = await e.library.initialSync()
+        #expect(try e.library.index.photo(id: id)?.orientationOverride == 8)
+        #expect(try e.library.index.photo(id: id)?.legacySidecarFingerprint == nil)
+        #expect(try e.library.index.versions(ofPhoto: id).first?.pixelWidth == 300)
+    }
+}

@@ -23,6 +23,8 @@ import SwiftUI
         var size: Int64
         var modified: Date
         var maxPixelSize: Int
+        /// The photo's orientation override; a rotated photo is decoded again.
+        var orientation: Int?
     }
 
     let app: AppModel
@@ -119,10 +121,15 @@ import SwiftUI
     }
 
     private func apply(_ loaded: Records, keepFocus: Bool) {
+        let sameOrientation = loaded.photo.orientationOverride == records?.photo.orientationOverride
         records = loaded
         isMissing = false
-        if keepFocus, let current = focusedVersion, loaded.versions.contains(current) {
+        if keepFocus, sameOrientation, let current = focusedVersion, loaded.versions.contains(current) {
             rebuildActionEntries()
+        } else if keepFocus, !sameOrientation, let current = focusedVersion,
+            let rotated = loaded.versions.first(where: { $0.id == current.id })
+        {
+            focus(rotated)  // same version, turned (its width and height may have swapped)
         } else {
             focus(loaded.versions.first(where: \.isDisplay) ?? loaded.versions.first)
         }
@@ -197,7 +204,8 @@ import SwiftUI
     private func loadImage(_ version: VersionRecord, url: URL) {
         let gen = generation
         let maxPixelSize = windowPixelSize()
-        let key = Self.key(version, url: url, maxPixelSize: maxPixelSize)
+        let orientation = orientationOverride(of: version)
+        let key = Self.key(version, url: url, maxPixelSize: maxPixelSize, orientation: orientation)
         if let full = fullImages[key] {
             setImage(full, version: version.id)
             return
@@ -205,14 +213,16 @@ import SwiftUI
         let file = MediaFile(url: url, size: version.size, modified: version.modified, created: version.modified)
         let loader = app.thumbnailLoader
         let thumbnails = app.library?.thumbnails
-        if image == nil, let thumbnail = loader?.cached(file) { setImage(thumbnail, version: version.id) }
+        if image == nil, let thumbnail = loader?.cached(file, orientation: orientation) {
+            setImage(thumbnail, version: version.id)
+        }
         imageTask = Task { [weak self] in
             if self?.image == nil {
                 let thumbnail: CGImage?
                 if let loader {
-                    thumbnail = await loader.image(for: file, kind: version.kind)
+                    thumbnail = await loader.image(for: file, kind: version.kind, orientation: orientation)
                 } else {
-                    thumbnail = await thumbnails?.thumbnail(for: file, kind: version.kind)
+                    thumbnail = await thumbnails?.thumbnail(for: file, kind: version.kind, orientation: orientation)
                 }
                 guard let self, gen == self.generation, !Task.isCancelled else { return }
                 if let thumbnail, self.image == nil { self.setImage(thumbnail, version: version.id) }
@@ -220,7 +230,7 @@ import SwiftUI
             // While ←/→ is held, photos flash by on their thumbnails; only the one that stays gets decoded.
             try? await Task.sleep(for: .milliseconds(60))
             guard !Task.isCancelled else { return }
-            let full = await Self.decode(url, maxPixelSize: maxPixelSize)
+            let full = await Self.decode(url, maxPixelSize: maxPixelSize, orientation: orientation)
             guard let self, gen == self.generation, !Task.isCancelled else { return }
             if let full {
                 fullImages[key] = full
@@ -241,9 +251,10 @@ import SwiftUI
         guard target > windowPixelSize() else { return }
         fullResolutionRequested = true
         let gen = generation
+        let orientation = orientationOverride(of: version)
         imageTask?.cancel()
         imageTask = Task { [weak self] in
-            let full = await Self.decode(url, maxPixelSize: target)
+            let full = await Self.decode(url, maxPixelSize: target, orientation: orientation)
             guard let self, gen == self.generation, !Task.isCancelled, let full else { return }
             setImage(full, version: version.id)
         }
@@ -255,9 +266,14 @@ import SwiftUI
         return max(512, Int((max(size.width, size.height) * window.backingScaleFactor).rounded()))
     }
 
-    private static func key(_ version: VersionRecord, url: URL, maxPixelSize: Int) -> ImageKey {
+    /// The sidecar's `tiff:Orientation` of the photo `version` belongs to (shared by all its versions).
+    private func orientationOverride(of version: VersionRecord) -> Int? {
+        records?.photo.id == version.photoId ? records?.photo.orientationOverride : nil
+    }
+
+    private static func key(_ version: VersionRecord, url: URL, maxPixelSize: Int, orientation: Int?) -> ImageKey {
         ImageKey(photoID: version.photoId, path: url.path, size: version.size, modified: version.modified,
-                 maxPixelSize: maxPixelSize)
+                 maxPixelSize: maxPixelSize, orientation: orientation)
     }
 
     // MARK: - Neighbours
@@ -293,9 +309,10 @@ import SwiftUI
                     !Self.isMotion(display.kind)
                 else { return }
                 let url = display.url(in: root)
-                let key = Self.key(display, url: url, maxPixelSize: maxPixelSize)
+                let orientation = loaded.photo.orientationOverride
+                let key = Self.key(display, url: url, maxPixelSize: maxPixelSize, orientation: orientation)
                 guard self?.fullImages[key] == nil else { return }
-                let full = await Self.decode(url, maxPixelSize: maxPixelSize)
+                let full = await Self.decode(url, maxPixelSize: maxPixelSize, orientation: orientation)
                 guard let self, !Task.isCancelled, let full else { return }
                 fullImages[key] = full
             }
@@ -435,9 +452,9 @@ import SwiftUI
         return Records(photo: photo, versions: versions, metadata: (try? index.metadata(ofPhoto: id)) ?? PhotoMetadata())
     }
 
-    @concurrent nonisolated private static func decode(_ url: URL, maxPixelSize: Int) async -> CGImage? {
+    @concurrent nonisolated private static func decode(_ url: URL, maxPixelSize: Int, orientation: Int?) async -> CGImage? {
         guard !Task.isCancelled else { return nil }
-        return ImageLoader.image(at: url, maxPixelSize: maxPixelSize)
+        return ImageLoader.image(at: url, maxPixelSize: maxPixelSize, orientation: orientation)
     }
 
     @concurrent nonisolated private static func exif(_ url: URL) async -> [(label: String, value: String)] {
