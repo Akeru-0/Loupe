@@ -26,6 +26,17 @@ import Testing
                 GridLayout.metrics(containerWidth: 1200, columns: 15).spacing)
     }
 
+    @Test func photosFitTheirSlotInTheirOwnShape() {
+        let slot = CGRect(x: 0, y: 0, width: 150, height: 150)
+        // landscape 3:2 → full width, centred vertically
+        #expect(PhotoCellView.photoRect(for: CGSize(width: 600, height: 400), in: slot) == CGRect(x: 0, y: 25, width: 150, height: 100))
+        // portrait 2:3 → full height, slim and centred horizontally
+        #expect(PhotoCellView.photoRect(for: CGSize(width: 400, height: 600), in: slot) == CGRect(x: 25, y: 0, width: 100, height: 150))
+        // square, and no thumbnail yet → the whole slot
+        #expect(PhotoCellView.photoRect(for: CGSize(width: 500, height: 500), in: slot) == slot)
+        #expect(PhotoCellView.photoRect(for: nil, in: slot) == slot)
+    }
+
     @Test func defaultColumnsPerMode() {
         #expect(GridLayout.defaultColumns(for: .years) == 14)
         #expect(GridLayout.defaultColumns(for: .months) == 10)

@@ -63,7 +63,7 @@ import LoupeMedia
     }
 }
 
-/// One square grid item: an aspect-filled thumbnail with badges.
+/// One square grid slot showing the whole photo (aspect-fit, rounded corners) with badges on the photo itself.
 final class PhotoCell: NSCollectionViewItem {
     static let identifier = NSUserInterfaceItemIdentifier("PhotoCell")
 
@@ -127,6 +127,8 @@ final class PhotoCellView: NSView {
     private let heart = PhotoCellView.symbol("heart.fill")
     private let edits = PhotoCellView.symbol("slider.horizontal.3")
     private let placeholder = NSImageView()
+    /// Pixel size of the shown thumbnail; nil until it loads (a rounded square placeholder until then).
+    private var imageSize: CGSize?
 
     var isSelected = false {
         didSet { selectionLayer.isHidden = !isSelected }
@@ -138,10 +140,13 @@ final class PhotoCellView: NSView {
     init() {
         super.init(frame: .zero)
         wantsLayer = true
-        layer?.backgroundColor = NSColor.gray.withAlphaComponent(0.18).cgColor
-        let noAnimation: [String: any CAAction] = ["contents": NSNull(), "bounds": NSNull(), "position": NSNull()]
+        let noAnimation: [String: any CAAction] = [
+            "contents": NSNull(), "bounds": NSNull(), "position": NSNull(), "cornerRadius": NSNull(),
+        ]
         imageLayer.contentsGravity = .resizeAspectFill
         imageLayer.masksToBounds = true
+        imageLayer.cornerCurve = .continuous
+        imageLayer.backgroundColor = NSColor.gray.withAlphaComponent(0.18).cgColor
         imageLayer.actions = noAnimation
         layer?.addSublayer(imageLayer)
 
@@ -152,6 +157,7 @@ final class PhotoCellView: NSView {
         for v in [kinds, rating, heart, edits] as [NSView] { addSubview(v) }
 
         selectionLayer.borderWidth = 3
+        selectionLayer.cornerCurve = .continuous
         selectionLayer.borderColor = NSColor.controlAccentColor.cgColor
         selectionLayer.isHidden = true
         selectionLayer.actions = noAnimation
@@ -165,7 +171,24 @@ final class PhotoCellView: NSView {
 
     func setImage(_ image: CGImage?, failed: Bool) {
         imageLayer.contents = image
+        let size = image.map { CGSize(width: $0.width, height: $0.height) }
+        if size != imageSize {
+            imageSize = size
+            needsLayout = true
+        }
         placeholder.isHidden = !failed
+    }
+
+    /// Where the photo sits in the slot: its own aspect ratio fitted inside the square and centred, so portrait
+    /// photos read as slim tiles and landscape ones as wide tiles. A square until the thumbnail is known.
+    static func photoRect(for imageSize: CGSize?, in bounds: CGRect) -> CGRect {
+        guard let size = imageSize, size.width > 0, size.height > 0, bounds.width > 0, bounds.height > 0 else {
+            return bounds
+        }
+        let scale = min(bounds.width / size.width, bounds.height / size.height)
+        let w = (size.width * scale).rounded(), h = (size.height * scale).rounded()
+        return CGRect(x: bounds.minX + ((bounds.width - w) / 2).rounded(),
+                      y: bounds.minY + ((bounds.height - h) / 2).rounded(), width: w, height: h)
     }
 
     func show(_ info: CellInfo?) {
@@ -185,22 +208,27 @@ final class PhotoCellView: NSView {
         super.layout()
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        imageLayer.frame = bounds
-        selectionLayer.frame = bounds
+        let photo = Self.photoRect(for: imageSize, in: bounds)
+        let radius = min(10, max(3, min(photo.width, photo.height) * 0.05))
+        imageLayer.frame = photo
+        imageLayer.cornerRadius = radius
+        selectionLayer.frame = photo
+        selectionLayer.cornerRadius = radius
         CATransaction.commit()
 
+        // Badges sit in the photo's own corners, not the slot's.
         let inset: CGFloat = 5, icon: CGFloat = 13
-        let tiny = bounds.width < 56
+        let tiny = photo.width < 56
         for v in [kinds, rating] { v.isHidden = tiny || v.stringValue.isEmpty }
         kinds.sizeToFit()
         rating.sizeToFit()
-        kinds.frame.origin = CGPoint(x: inset, y: bounds.height - inset - kinds.frame.height)
-        kinds.frame.size.width = min(kinds.frame.width, bounds.width - 2 * inset)
-        rating.frame.origin = CGPoint(x: bounds.width - inset - rating.frame.width, y: bounds.height - inset - rating.frame.height)
-        heart.frame = CGRect(x: bounds.width - inset - icon, y: inset, width: icon, height: icon)
-        edits.frame = CGRect(x: inset, y: inset, width: icon, height: icon)
-        let side = min(32, bounds.width / 3)
-        placeholder.frame = CGRect(x: bounds.midX - side / 2, y: bounds.midY - side / 2, width: side, height: side)
+        kinds.frame.origin = CGPoint(x: photo.minX + inset, y: photo.maxY - inset - kinds.frame.height)
+        kinds.frame.size.width = min(kinds.frame.width, photo.width - 2 * inset)
+        rating.frame.origin = CGPoint(x: photo.maxX - inset - rating.frame.width, y: photo.maxY - inset - rating.frame.height)
+        heart.frame = CGRect(x: photo.maxX - inset - icon, y: photo.minY + inset, width: icon, height: icon)
+        edits.frame = CGRect(x: photo.minX + inset, y: photo.minY + inset, width: icon, height: icon)
+        let side = min(32, photo.width / 3)
+        placeholder.frame = CGRect(x: photo.midX - side / 2, y: photo.midY - side / 2, width: side, height: side)
     }
 
     private static let badgeShadow: NSShadow = {
