@@ -610,7 +610,7 @@ import Observation
         guard let loader else { return }
         for path in indexPaths {
             if let id = dataSource.itemIdentifier(for: path), let info = infos[id] {
-                loader.prefetch(info.displayFile, kind: info.displayKind, orientation: info.orientationOverride)
+                loader.prefetch(info.displayFile, kind: info.displayKind, rotation: info.rotation)
             }
         }
     }
@@ -619,7 +619,7 @@ import Observation
         guard let loader else { return }
         for path in indexPaths {
             if let id = dataSource.itemIdentifier(for: path), let info = infos[id] {
-                loader.cancelPrefetch(info.displayFile, orientation: info.orientationOverride)
+                loader.cancelPrefetch(info.displayFile, rotation: info.rotation)
             }
         }
     }

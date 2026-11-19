@@ -108,6 +108,30 @@ private func pixels(_ image: CGImage) throws -> [Int] {
         }
     }
 
+    @Test func composedAfterUndoesRelative() {
+        for a in all {
+            for b in all { #expect(b.relative(to: a).composed(after: a) == b, "\(b.exif) relative to \(a.exif)") }
+            #expect(Orientation.up.composed(after: a) == a)
+            #expect(a.composed(after: .up) == a)
+        }
+    }
+
+    /// The sidecar's value is about the file it describes; every version gets the same extra turn from it.
+    @Test func rotationIsRelativeToTheBaseFile() {
+        #expect(Orientation.rotation(override: nil, baseEmbedded: 6) == nil)
+        #expect(Orientation.rotation(override: 0, baseEmbedded: 6) == nil)  // invalid: no override
+        #expect(Orientation.rotation(override: 6, baseEmbedded: 6) == nil)  // says what the file says
+        #expect(Orientation.rotation(override: 1, baseEmbedded: nil) == nil)
+        #expect(Orientation.rotation(override: 3, baseEmbedded: 6)?.exif == 6)  // a further quarter turn clockwise
+        #expect(Orientation.rotation(override: 6, baseEmbedded: nil)?.exif == 6)
+        #expect(Orientation.rotation(override: 1, baseEmbedded: 6)?.exif == 8)
+        for base in all {
+            for o in all where o != base {
+                #expect(Orientation.rotation(override: o.exif, baseEmbedded: base.exif)?.composed(after: base) == o)
+            }
+        }
+    }
+
     @Test func rotationTurnsTheShownImage() throws {
         // Rotating clockwise must turn what the user sees clockwise, whatever the starting orientation.
         let image = try sample()

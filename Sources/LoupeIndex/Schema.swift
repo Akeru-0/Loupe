@@ -90,6 +90,12 @@ enum Schema {
             try db.execute(sql: "ALTER TABLE photo ADD COLUMN orientationOverride INTEGER")
             try markSidecarPhotosForRescan(db)
         }
+        migrator.registerMigration("v5") { db in
+            // The turn every version gets: the override read against the file the sidecar describes. Photos with
+            // a sidecar are re-read once so it is filled in (and a redundant override from v4 is dropped).
+            try db.execute(sql: "ALTER TABLE photo ADD COLUMN rotation INTEGER")
+            try markSidecarPhotosForRescan(db)
+        }
         return migrator
     }
 

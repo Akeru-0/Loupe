@@ -20,7 +20,7 @@ func makeTempDir() throws -> URL {
             kCGImagePropertyExifDateTimeOriginal: "2026:09:06 14:30:00",
             kCGImagePropertyExifOffsetTimeOriginal: "+02:00",
         ])
-        let info = await MediaInfoReader.read(url, kind: .jpeg, orientation: nil)
+        let info = await MediaInfoReader.read(url, kind: .jpeg, rotation: nil)
         #expect(info.captureDate == ISO8601DateFormatter().date(from: "2026-09-06T12:30:00Z"))
     }
 
@@ -29,7 +29,7 @@ func makeTempDir() throws -> URL {
         defer { try? FileManager.default.removeItem(at: dir) }
         let url = dir.appendingPathComponent("a.jpg")
         try TestImages.makeJPEG(at: url, width: 400, height: 300, orientation: 6)
-        let info = await MediaInfoReader.read(url, kind: .jpeg, orientation: nil)
+        let info = await MediaInfoReader.read(url, kind: .jpeg, rotation: nil)
         #expect(info.pixelWidth == 300)
         #expect(info.pixelHeight == 400)
     }
@@ -42,7 +42,7 @@ func makeTempDir() throws -> URL {
             at: url, width: 40, height: 30,
             exif: [kCGImagePropertyExifLensModel: "EF-S18-55mm"],
             tiff: [kCGImagePropertyTIFFModel: "Canon EOS 600D"], gps: true)
-        let info = await MediaInfoReader.read(url, kind: .jpeg, orientation: nil)
+        let info = await MediaInfoReader.read(url, kind: .jpeg, rotation: nil)
         #expect(info.cameraModel == "Canon EOS 600D")
         #expect(info.lensModel == "EF-S18-55mm")
         #expect(info.hasLocation)

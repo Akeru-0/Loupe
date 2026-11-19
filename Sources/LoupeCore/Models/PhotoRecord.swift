@@ -20,15 +20,20 @@ public struct PhotoRecord: Codable, Hashable, Sendable, Identifiable {
     public var sidecarModified: Date?
     /// Names and mtimes of legacy (`<file>.<ext>.xmp`) sidecars, so changes to them are noticed.
     public var legacySidecarFingerprint: String?
-    /// The sidecar's `tiff:Orientation`, overriding the files' own orientation; nil when there is none.
+    /// The sidecar's `tiff:Orientation`, read against the file the sidecar describes (`PhotoGroup.orientationBase`);
+    /// nil when there is none or it only repeats that file's own orientation.
     public var orientationOverride: Int?
+    /// The extra turn (EXIF value) every version is shown with on top of its own orientation; nil for none.
+    /// See `Orientation.rotation(override:baseEmbedded:)`.
+    public var rotation: Int?
 
     public init(
         id: Int64? = nil, locationId: String, folderPath: String, stem: String, stemKey: String,
         captureDate: Date? = nil, addedDate: Date, rating: Int = 0, isFavorite: Bool = false,
         hasLightCraftEdits: Bool = false, cameraModel: String? = nil, lensModel: String? = nil,
         hasRaw: Bool = false, hasVideo: Bool = false, sidecarModified: Date? = nil,
-        legacySidecarFingerprint: String? = nil, orientationOverride: Int? = nil
+        legacySidecarFingerprint: String? = nil, orientationOverride: Int? = nil,
+        rotation: Int? = nil
     ) {
         self.id = id
         self.locationId = locationId
@@ -47,6 +52,7 @@ public struct PhotoRecord: Codable, Hashable, Sendable, Identifiable {
         self.sidecarModified = sidecarModified
         self.legacySidecarFingerprint = legacySidecarFingerprint
         self.orientationOverride = orientationOverride
+        self.rotation = rotation
     }
 
     public var key: String { folderPath.isEmpty ? stem : folderPath + "/" + stem }

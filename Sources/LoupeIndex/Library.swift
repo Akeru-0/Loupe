@@ -159,26 +159,28 @@ public actor Library {
         if track { await guardIfSidecarChangedSinceStamp(photoID: id) }
         let sidecarNow = group.sidecarURLForWriting
         let before = try (try? XMPDocument(data: Data(contentsOf: sidecarNow)).metadata) ?? index.metadata(ofPhoto: id)
-        let oldOverride = try index.photo(id: id)?.orientationOverride
+        let oldRotation = try index.photo(id: id)?.rotation
         let metadata = try SidecarIO.write(changes, to: group)  // throws for malformed sidecars, never writes them
         let sidecar = group.sidecarURLForWriting
         let stamp = (try? fm.attributesOfItem(atPath: sidecar.path))?[.modificationDate] as? Date
+        // A sidecar value that only repeats the file's own orientation is no override.
+        let rotation = SidecarIO.rotation(of: group, override: metadata.orientation)?.exif
         // Rotated: the shown width and height of every version may have swapped.
         var dimensions: [(version: Int64, info: MediaInfo)] = []
-        if metadata.orientation != oldOverride {
+        if rotation != oldRotation {
             for v in try index.versions(ofPhoto: id) {
                 guard let vid = v.id else { continue }
-                dimensions.append((vid, await MediaInfoReader.read(v.url(in: root), kind: v.kind, orientation: metadata.orientation)))
+                dimensions.append((vid, await MediaInfoReader.read(v.url(in: root), kind: v.kind, rotation: rotation)))
             }
         }
         try await index.dbPool.write { [dimensions] db in
             try db.execute(
                 sql: """
                     UPDATE photo SET rating = ?, isFavorite = ?, hasLightCraftEdits = ?, sidecarModified = ?,
-                    orientationOverride = ? WHERE id = ?
+                    orientationOverride = ?, rotation = ? WHERE id = ?
                     """,
                 arguments: [metadata.rating, metadata.isFavorite, metadata.hasLightCraftEdits,
-                            stamp?.timeIntervalSince1970, metadata.orientation, id])
+                            stamp?.timeIntervalSince1970, rotation == nil ? nil : metadata.orientation, rotation, id])
             for (vid, info) in dimensions where info.pixelWidth != nil {
                 try db.execute(sql: "UPDATE version SET pixelWidth = ?, pixelHeight = ? WHERE id = ?",
                                arguments: [info.pixelWidth, info.pixelHeight, vid])

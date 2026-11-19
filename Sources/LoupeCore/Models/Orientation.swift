@@ -43,6 +43,27 @@ public struct Orientation: Hashable, Sendable {
         Orientation(transform.after(base.transform.inverse))
     }
 
+    /// `self` applied to an image already shown with `base`: the orientation that shows it in one step.
+    /// Undoes `relative(to:)`: `b.relative(to: a).composed(after: a) == b`.
+    public func composed(after base: Orientation) -> Orientation {
+        Orientation(transform.after(base.transform))
+    }
+
+    /// The photo's **rotation**: the extra turn every version gets on top of its own orientation.
+    /// A sidecar's `tiff:Orientation` (`override`) describes the file the sidecar belongs to
+    /// (`PhotoGroup.orientationBase`), so the turn is the override relative to that file's own orientation
+    /// (`baseEmbedded`). nil when there is no valid override or it says what that file already says.
+    public static func rotation(override: Int?, baseEmbedded: Int?) -> Orientation? {
+        guard let target = override.flatMap(Orientation.init(exif:)) else { return nil }
+        let base = effective(override: nil, embedded: baseEmbedded)
+        return target == base ? nil : target.relative(to: base)
+    }
+
+    /// A stored rotation (`PhotoRecord.rotation`) as a turn that changes anything; nil for none, invalid or 1.
+    public static func turn(_ rotation: Int?) -> Orientation? {
+        rotation.flatMap(Orientation.init(exif:)).flatMap { $0 == .up ? nil : $0 }
+    }
+
     /// True when the shown image is the stored one with width and height exchanged.
     public var swapsDimensions: Bool { transform.quarterTurns % 2 == 1 }
 

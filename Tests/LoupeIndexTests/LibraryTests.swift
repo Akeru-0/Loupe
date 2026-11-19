@@ -3,6 +3,7 @@ import Foundation
 import Testing
 import GRDB
 import LoupeCore
+import LoupeMedia
 import LoupeTestSupport
 @testable import LoupeIndex
 
@@ -462,12 +463,14 @@ private final class Notes: @unchecked Sendable {
         _ = await e.library.initialSync()
         let id = try e.id("a/IMG_1")
 
+        // The JPEG is the file the sidecar describes and its own orientation is 1, so rotation == override here.
         func check(_ override: Int?, _ w: Int, _ h: Int) throws {
             #expect(try e.library.index.photo(id: id)?.orientationOverride == override)
+            #expect(try e.library.index.photo(id: id)?.rotation == override)
             let version = try #require(try e.library.index.versions(ofPhoto: id).first)
             #expect(version.pixelWidth == w && version.pixelHeight == h)
             let cell = try e.library.index.cellInfo(ids: [id], root: e.lib.root)[id]
-            #expect(cell?.orientationOverride == override)
+            #expect(cell?.rotation == override)
         }
         try check(6, 300, 400)
 
@@ -492,6 +495,71 @@ private final class Notes: @unchecked Sendable {
         _ = await e.library.initialSync()
         try check(8, 300, 400)
         #expect(try Data(contentsOf: jpeg) == imageBytes)
+    }
+
+    /// RAW (own orientation 6) + LightCraft edit (the turn baked in, own 1). The sidecar is the RAW's: its value is
+    /// read against the RAW, and both versions get the same extra turn.
+    @Test func groupRotatesRelativeToTheRaw() async throws {
+        let e = try Env()
+        let raw = e.lib.url("a/IMG_1.dng"), edit = e.lib.url("a/IMG_1-edited.tif")
+        try FileManager.default.createDirectory(at: raw.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try TestImages.makeQuadrantTIFF(at: raw, width: 40, height: 20, orientation: 6)
+        try TestImages.makeQuadrantTIFF(at: edit, width: 20, height: 40, orientation: 1)
+        let rawBytes = try Data(contentsOf: raw), editBytes = try Data(contentsOf: edit)
+        _ = await e.library.initialSync()
+        let id = try e.id("a/IMG_1")
+        let root = e.lib.root
+        func versions() throws -> [(kind: VersionKind, url: URL, size: [Int?])] {
+            try e.library.index.versions(ofPhoto: id).map { ($0.kind, $0.url(in: root), [$0.pixelWidth, $0.pixelHeight]) }
+        }
+        #expect(try versions().map(\.kind).sorted { $0.rawValue < $1.rawValue } == [.edit, .raw])
+        #expect(try versions().allSatisfy { $0.size == [20, 40] })
+        let before = try versions().map { TestImages.pixels(try #require(ImageLoader.image(at: $0.url, maxPixelSize: 40, rotation: nil))) }
+
+        #expect(await e.library.apply([.rotate(clockwise: true)], to: [id]).isEmpty)
+        #expect(try e.sidecarText("a/IMG_1.xmp").contains(">3<"))  // the RAW's 6, turned clockwise
+        let photo = try #require(try e.library.index.photo(id: id))
+        #expect(photo.orientationOverride == 3)
+        #expect(photo.rotation == 6)  // one quarter turn clockwise, for every version
+        #expect(try e.library.index.cellInfo(ids: [id], root: root)[id]?.rotation == 6)
+        #expect(try versions().allSatisfy { $0.size == [40, 20] })
+        let quarter = Orientation(exif: 6)!
+        for (i, v) in try versions().enumerated() {
+            let after = try #require(ImageLoader.image(at: v.url, maxPixelSize: 40, rotation: photo.rotation))
+            let shownBefore = try #require(ImageLoader.image(at: v.url, maxPixelSize: 40, rotation: nil))
+            #expect(TestImages.pixels(shownBefore) == before[i])
+            #expect(TestImages.pixels(after) == TestImages.pixels(try #require(quarter.apply(to: shownBefore))), "\(v.kind)")
+        }
+
+        #expect(await e.library.apply([.rotate(clockwise: false)], to: [id]).isEmpty)
+        #expect(try e.library.index.photo(id: id)?.rotation == nil)
+        #expect(!(try e.sidecarText("a/IMG_1.xmp")).contains("Orientation"))
+        #expect(try versions().allSatisfy { $0.size == [20, 40] })
+        #expect(try Data(contentsOf: raw) == rawBytes && Data(contentsOf: edit) == editBytes)
+    }
+
+    /// A foreign sidecar repeating the file's own orientation is no override: nothing renders, keys or exports
+    /// differently for an unrotated photo.
+    @Test func redundantSidecarOrientationIsNoOverride() async throws {
+        let e = try Env()
+        try FileManager.default.createDirectory(at: e.lib.url("a"), withIntermediateDirectories: true)
+        try TestImages.makeJPEG(at: e.lib.url("a/IMG_1.jpg"), width: 40, height: 30, orientation: 6)
+        let sidecar = """
+            <x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">\
+            <rdf:Description xmlns:tiff="http://ns.adobe.com/tiff/1.0/" tiff:Orientation="6"/></rdf:RDF></x:xmpmeta>
+            """
+        try e.lib.addFile("a/IMG_1.xmp", bytes: Data(sidecar.utf8))
+        _ = await e.library.initialSync()
+        let id = try e.id("a/IMG_1")
+        let photo = try #require(try e.library.index.photo(id: id))
+        #expect(photo.orientationOverride == nil)
+        #expect(photo.rotation == nil)
+        #expect(try e.library.index.cellInfo(ids: [id], root: e.lib.root)[id]?.rotation == nil)
+        #expect(try e.library.index.versions(ofPhoto: id).first?.pixelWidth == 30)
+        // A rating change leaves it so.
+        #expect(await e.library.apply([.setRating(2)], to: [id]).isEmpty)
+        #expect(try e.library.index.photo(id: id)?.rotation == nil)
+        #expect(try e.library.index.photo(id: id)?.orientationOverride == nil)
     }
 
     /// An index scanned before v4 has no override for a sidecar that already had `tiff:Orientation`.
@@ -532,11 +600,12 @@ private final class Notes: @unchecked Sendable {
         try e.lib.addFile("a/IMG_1.xmp", bytes: Data(sidecar.utf8))
         _ = await e.library.initialSync()
         try await e.library.index.dbPool.write { db in
-            try db.execute(sql: "UPDATE photo SET orientationOverride = NULL WHERE id = ?", arguments: [id])
+            try db.execute(sql: "UPDATE photo SET orientationOverride = NULL, rotation = NULL WHERE id = ?", arguments: [id])
             try Schema.markSidecarPhotosForRescan(db)
         }
         _ = await e.library.initialSync()
         #expect(try e.library.index.photo(id: id)?.orientationOverride == 8)
+        #expect(try e.library.index.photo(id: id)?.rotation == 8)
         #expect(try e.library.index.photo(id: id)?.legacySidecarFingerprint == nil)
         #expect(try e.library.index.versions(ofPhoto: id).first?.pixelWidth == 300)
     }

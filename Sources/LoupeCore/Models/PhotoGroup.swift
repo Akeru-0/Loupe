@@ -37,6 +37,12 @@ public struct PhotoGroup: Hashable, Sendable {
         return versions[0]
     }
 
+    /// The file the sidecar describes, whose own orientation a sidecar `tiff:Orientation` is read against:
+    /// the RAW if there is one (it owns `<stem>.xmp`, also for LightCraft), else the display version.
+    public var orientationBase: GroupedVersion {
+        versions.first { $0.kind == .raw } ?? displayVersion
+    }
+
     public var sidecarURLForWriting: URL {
         sidecar ?? folder.appendingPathComponent(stem + ".xmp")
     }

@@ -104,16 +104,21 @@ rejected: it can't match the native look or RAW performance.
 - **Capture date** comes from EXIF, falling back to file creation date.
 - **Orientation (rotation)**: Rotate writes the standard XMP `tiff:Orientation`
   (`http://ns.adobe.com/tiff/1.0/`, EXIF values 1–8) into the photo's sidecar;
-  the image file is never touched. The **effective orientation** is the
-  sidecar's `tiff:Orientation` if present, otherwise the file's own embedded
+  the image file is never touched. The sidecar describes one file, the
+  **base**: the group's RAW if it has one (it owns `<stem>.xmp`, also for
+  LightCraft), else the display version. The base's **effective orientation**
+  is the sidecar's `tiff:Orientation` if present, otherwise its own embedded
   orientation (EXIF/TIFF, or the RAW's metadata as ImageIO reports it),
-  otherwise 1. Grid thumbnails, the viewer, the slideshow, version dimensions
-  and share exports all use it. Renderers decode with the file's own
-  orientation applied, then turn by `override.relative(to: embedded)`. A
-  rotation that lands back on the file's own orientation removes
-  `tiff:Orientation` from the sidecar instead of writing a redundant value.
-  Only a sidecar overrides: XMP embedded in the file is not an override.
-  Videos keep their own orientation.
+  otherwise 1. The photo's **rotation** is `override.relative(to:
+  baseEmbedded)`, and every version (RAW, camera JPEG, LightCraft edit with its
+  own turn baked in) is shown with its own orientation and then that same
+  rotation. Grid thumbnails, the viewer, the slideshow, version dimensions and
+  share exports all use it (the Original export of a JPEG/PNG/TIFF gets the
+  rotation added to its own orientation tag). Rotate turns from the base's
+  effective orientation; landing back on the base's own orientation removes
+  `tiff:Orientation` instead of writing a redundant value, and a sidecar value
+  that only repeats it counts as no override. Only a sidecar overrides: XMP
+  embedded in the file is not an override. Videos keep their own orientation.
 - **Album**: a folder under the root that directly contains photos or videos.
   An empty folder is an album too, so New Album creates one. A photo is in
   exactly one album; adding it to an album, or dropping it on one, moves all its

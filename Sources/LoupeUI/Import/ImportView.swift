@@ -207,7 +207,7 @@ private struct ImportCell: View {
         self.isSelected = isSelected
         self.loader = loader
         // Card files have no sidecar Loupe reads, so no override: they show their own orientation.
-        image = State(initialValue: loader?.cached(group.displayVersion.file, orientation: nil))
+        image = State(initialValue: loader?.cached(group.displayVersion.file, rotation: nil))
     }
 
     var body: some View {
@@ -253,7 +253,7 @@ private struct ImportCell: View {
         .help(onMac ? "\(group.stem) is already on this Mac" : group.stem)
         .task(id: display.file) {
             guard image.wrappedValue == nil, let loader else { return }
-            image.wrappedValue = await loader.image(for: display.file, kind: display.kind, orientation: nil)
+            image.wrappedValue = await loader.image(for: display.file, kind: display.kind, rotation: nil)
         }
     }
 

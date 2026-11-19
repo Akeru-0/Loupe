@@ -26,13 +26,21 @@ public enum SidecarIO {
 
     @discardableResult
     public static func write(_ changes: [MetadataChange], to group: PhotoGroup) throws -> PhotoMetadata {
-        // Only read (never written): what the display file says by itself, for turning from it.
+        // Only read (never written): what the file the sidecar describes says by itself, for turning from it.
         let embedded = changes.contains { if case .rotate = $0 { true } else { false } }
-            ? EmbeddedMetadataReader.orientation(in: group.displayVersion.file.url) : nil
+            ? EmbeddedMetadataReader.orientation(in: group.orientationBase.file.url) : nil
         if let url = existingSidecar(group) {
             return try update(existing: url, changes, embeddedOrientation: embedded)
         }
         return try create(group, changes, embeddedOrientation: embedded)
+    }
+
+    /// The photo's rotation (the extra turn for every version) for a sidecar `tiff:Orientation` of `override`:
+    /// read against the file the sidecar describes. Reads that file's orientation only when there is an override.
+    public static func rotation(of group: PhotoGroup, override: Int?) -> Orientation? {
+        guard override != nil else { return nil }
+        let base = EmbeddedMetadataReader.orientation(in: group.orientationBase.file.url)
+        return Orientation.rotation(override: override, baseEmbedded: base)
     }
 
     // MARK: -

@@ -74,4 +74,36 @@ public enum TestImages {
         }
         guard CGImageDestinationFinalize(dest) else { throw TestImageError(message: "finalize failed") }
     }
+
+    /// Writes a lossless TIFF with four flat quadrants of different colours, tagged with `orientation`, so any turn
+    /// or mirror shows in the pixels. Any extension works (`.dng`/`.cr2` stand in for a RAW the decoder can read).
+    public static func makeQuadrantTIFF(at url: URL, width: Int, height: Int, orientation: Int = 1) throws {
+        guard let ctx = CGContext(
+            data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
+            space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue)
+        else { throw TestImageError(message: "cannot create bitmap") }
+        let colours: [(CGFloat, CGFloat, CGFloat)] = [(1, 0, 0), (0, 1, 0), (0, 0, 1), (1, 1, 0)]
+        for (i, c) in colours.enumerated() {
+            ctx.setFillColor(CGColor(srgbRed: c.0, green: c.1, blue: c.2, alpha: 1))
+            ctx.fill(CGRect(x: (i % 2) * width / 2, y: (i / 2) * height / 2, width: width / 2, height: height / 2))
+        }
+        guard let image = ctx.makeImage(),
+            let dest = CGImageDestinationCreateWithURL(url as CFURL, UTType.tiff.identifier as CFString, 1, nil)
+        else { throw TestImageError(message: "cannot create destination") }
+        CGImageDestinationAddImage(dest, image, [kCGImagePropertyOrientation: orientation] as CFDictionary)
+        guard CGImageDestinationFinalize(dest) else { throw TestImageError(message: "finalize failed") }
+    }
+
+    /// Width, height and the RGBA bytes (top row first) of `image`, for exact comparisons.
+    public static func pixels(_ image: CGImage) -> [Int] {
+        let w = image.width, h = image.height
+        var bytes = [UInt8](repeating: 0, count: w * h * 4)
+        bytes.withUnsafeMutableBytes { buffer in
+            let ctx = CGContext(
+                data: buffer.baseAddress, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
+                space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+            ctx?.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+        }
+        return [w, h] + bytes.map(Int.init)
+    }
 }

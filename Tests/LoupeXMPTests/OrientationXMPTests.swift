@@ -98,6 +98,28 @@ private func group(_ jpeg: URL, sidecar: URL? = nil) -> PhotoGroup {
         #expect(try canonical(after) == canonical(original))
     }
 
+    /// RAW (shown turned by its own 6) + a LightCraft edit with the turn baked in (1): the sidecar is the RAW's,
+    /// so a clockwise turn is computed from the RAW's 6, not from the edit the grid displays.
+    @Test func rotationBaseIsTheRaw() throws {
+        let dir = try tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let raw = dir.appendingPathComponent("IMG_1.dng"), edit = dir.appendingPathComponent("IMG_1-edited.tif")
+        try TestImages.makeQuadrantTIFF(at: raw, width: 40, height: 30, orientation: 6)
+        try TestImages.makeQuadrantTIFF(at: edit, width: 30, height: 40, orientation: 1)
+        func version(_ url: URL, _ kind: VersionKind) -> GroupedVersion {
+            GroupedVersion(file: MediaFile(url: url, size: 0, modified: .now, created: .now), kind: kind)
+        }
+        let sidecar = dir.appendingPathComponent("IMG_1.xmp")
+        func g() -> PhotoGroup {
+            PhotoGroup(folder: dir, stem: "IMG_1", stemKey: "img_1", versions: [version(raw, .raw), version(edit, .edit)],
+                       sidecar: FileManager.default.fileExists(atPath: sidecar.path) ? sidecar : nil, legacySidecars: [])
+        }
+        #expect(g().displayVersion.kind == .edit)
+        #expect(g().orientationBase.kind == .raw)
+        #expect(try SidecarIO.write([.rotate(clockwise: true)], to: g()).orientation == 3)
+        #expect(try SidecarIO.write([.rotate(clockwise: false)], to: g()).orientation == nil)  // back to the RAW's own 6
+    }
+
     @Test func noOpRotationLeavesSidecarUntouched() throws {
         let dir = try tempDir()
         defer { try? FileManager.default.removeItem(at: dir) }

@@ -3,7 +3,7 @@ import ImageIO
 import LoupeCore
 
 /// Shares the original bytes. For JPEG/PNG/TIFF it re-muxes losslessly when needed: without GPS for "remove location",
-/// and with the photo's orientation override in the orientation tag. Other formats keep the file's own orientation.
+/// and with the photo's rotation added to the file's own orientation tag. Other formats keep the file's own orientation.
 public struct OriginalExporter: ShareExporter {
     public let id = "original"
     public let title = "Original"
@@ -18,13 +18,13 @@ public struct OriginalExporter: ShareExporter {
 
     static func canSetOrientation(_ file: URL) -> Bool { canStripLocation(file) }
 
-    public func export(_ file: URL, kind: VersionKind, orientation: Int?, removeLocation: Bool, into directory: URL) throws -> URL {
+    public func export(_ file: URL, kind: VersionKind, rotation: Int?, removeLocation: Bool, into directory: URL) throws -> URL {
         let folder = directory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         let out = folder.appendingPathComponent(file.lastPathComponent)
         let stripLocation = removeLocation && Self.canStripLocation(file)
-        let setOrientation = orientation.flatMap(Orientation.init(exif:)).flatMap { Self.canSetOrientation(file) ? $0 : nil }
-        guard stripLocation || setOrientation != nil else {
+        let turn = Self.canSetOrientation(file) ? Orientation.turn(rotation) : nil
+        guard stripLocation || turn != nil else {
             try FileManager.default.copyItem(at: file, to: out)
             return out
         }
@@ -33,6 +33,9 @@ public struct OriginalExporter: ShareExporter {
         do {
             guard var source = CGImageSourceCreateWithURL(file as CFURL, nil), let type = CGImageSourceGetType(source)
             else { throw failure }
+            // The file's own orientation, then the photo's rotation, as one tag.
+            let own = Orientation.effective(override: nil, embedded: Orientation.embedded(in: source))
+            let setOrientation = turn?.composed(after: own)
             // ImageIO refuses GPS exclusion and a new orientation in one copy, so those are two lossless passes.
             if stripLocation, setOrientation != nil {
                 let stripped = NSMutableData()

@@ -4,16 +4,16 @@ import ImageIO
 import LoupeCore
 
 public enum MediaInfoReader {
-    /// Pixel width and height are as shown: with `orientation` (the photo's override) if set, else the file's own.
+    /// Pixel width and height are as shown: the file's own orientation, then the photo's `rotation` on top.
     /// Videos always use their own orientation.
-    public static func read(_ url: URL, kind: VersionKind, orientation: Int?) async -> MediaInfo {
+    public static func read(_ url: URL, kind: VersionKind, rotation: Int?) async -> MediaInfo {
         switch kind {
         case .video, .live: return await readVideo(url)
-        default: return readImage(url, override: orientation)
+        default: return readImage(url, rotation: rotation)
         }
     }
 
-    private static func readImage(_ url: URL, override: Int?) -> MediaInfo {
+    private static func readImage(_ url: URL, rotation: Int?) -> MediaInfo {
         guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
             let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any]
         else { return MediaInfo() }
@@ -32,7 +32,8 @@ public enum MediaInfoReader {
         }
 
         if let w = props[kCGImagePropertyPixelWidth] as? Int, let h = props[kCGImagePropertyPixelHeight] as? Int {
-            let swap = Orientation.effective(override: override, embedded: Orientation.embedded(in: source)).swapsDimensions
+            let own = Orientation.effective(override: nil, embedded: Orientation.embedded(in: source))
+            let swap = own.swapsDimensions != (Orientation.turn(rotation)?.swapsDimensions ?? false)
             info.pixelWidth = swap ? h : w
             info.pixelHeight = swap ? w : h
         }

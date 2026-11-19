@@ -18,16 +18,16 @@ import LoupeMedia
 
     private static func cost(_ image: CGImage) -> Int { image.bytesPerRow * image.height }
 
-    /// `orientation` is the photo's override: a rotated photo is a different image.
-    private static func key(_ file: MediaFile, _ orientation: Int?) -> NSString {
-        "\(file.url.path)|\(file.size)|\(file.modified.timeIntervalSince1970)|\(orientation ?? 0)" as NSString
+    /// `rotation` is the photo's extra turn (`CellInfo.rotation`): a rotated photo is a different image.
+    private static func key(_ file: MediaFile, _ rotation: Int?) -> NSString {
+        "\(file.url.path)|\(file.size)|\(file.modified.timeIntervalSince1970)|\(rotation ?? 0)" as NSString
     }
 
-    func cached(_ file: MediaFile, orientation: Int?) -> CGImage? { cache.object(forKey: Self.key(file, orientation)) }
+    func cached(_ file: MediaFile, rotation: Int?) -> CGImage? { cache.object(forKey: Self.key(file, rotation)) }
 
     /// Cancelling the calling task stops the load if it hasn't started decoding yet.
-    func image(for file: MediaFile, kind: VersionKind, orientation: Int?) async -> CGImage? {
-        let key = Self.key(file, orientation)
+    func image(for file: MediaFile, kind: VersionKind, rotation: Int?) async -> CGImage? {
+        let key = Self.key(file, rotation)
         if let image = cache.object(forKey: key) { return image }
         if let pending = prefetches[key] {
             if let image = await pending.task.value { return image }
@@ -35,18 +35,18 @@ import LoupeMedia
             if Task.isCancelled { return nil }
         }
         guard !Task.isCancelled else { return nil }
-        let image = await thumbnails.thumbnail(for: file, kind: kind, orientation: orientation)
+        let image = await thumbnails.thumbnail(for: file, kind: kind, rotation: rotation)
         if let image { cache.setObject(image, forKey: key, cost: Self.cost(image)) }
         return image
     }
 
-    func prefetch(_ file: MediaFile, kind: VersionKind, orientation: Int?) {
-        let key = Self.key(file, orientation)
+    func prefetch(_ file: MediaFile, kind: VersionKind, rotation: Int?) {
+        let key = Self.key(file, rotation)
         guard cache.object(forKey: key) == nil, prefetches[key] == nil else { return }
         let token = UUID()
         let thumbnails = thumbnails
         let task = Task(priority: .utility) { [weak self] () -> CGImage? in
-            let image = await thumbnails.thumbnail(for: file, kind: kind, orientation: orientation)
+            let image = await thumbnails.thumbnail(for: file, kind: kind, rotation: rotation)
             if let self {
                 if let image { self.cache.setObject(image, forKey: key, cost: Self.cost(image)) }
                 if self.prefetches[key]?.token == token { self.prefetches[key] = nil }
@@ -56,8 +56,8 @@ import LoupeMedia
         prefetches[key] = (token, task)
     }
 
-    func cancelPrefetch(_ file: MediaFile, orientation: Int?) {
-        let key = Self.key(file, orientation)
+    func cancelPrefetch(_ file: MediaFile, rotation: Int?) {
+        let key = Self.key(file, rotation)
         prefetches[key]?.task.cancel()
         prefetches[key] = nil
     }
@@ -81,7 +81,7 @@ final class PhotoCell: NSCollectionViewItem {
     /// Shows `info` for `id`. The thumbnail is reloaded only if the display file or its orientation changed.
     func configure(id: Int64, info: CellInfo?, loader: ThumbnailLoader?) {
         let sameFile = photoID == id && info != nil && info?.displayFile == self.info?.displayFile
-            && info?.orientationOverride == self.info?.orientationOverride
+            && info?.rotation == self.info?.rotation
         photoID = id
         self.info = info
         cellView.show(info)
@@ -92,16 +92,16 @@ final class PhotoCell: NSCollectionViewItem {
             cellView.setImage(nil, failed: false)
             return
         }
-        if let image = loader.cached(info.displayFile, orientation: info.orientationOverride) {
+        if let image = loader.cached(info.displayFile, rotation: info.rotation) {
             cellView.setImage(image, failed: false)
             return
         }
         cellView.setImage(nil, failed: false)
-        let file = info.displayFile, orientation = info.orientationOverride
+        let file = info.displayFile, rotation = info.rotation
         loadTask = Task { [weak self] in
-            let image = await loader.image(for: file, kind: info.displayKind, orientation: orientation)
+            let image = await loader.image(for: file, kind: info.displayKind, rotation: rotation)
             // A reused cell never shows another photo's thumbnail: the task is cancelled on reuse, and the file must match.
-            guard !Task.isCancelled, let self, self.info?.displayFile == file, self.info?.orientationOverride == orientation
+            guard !Task.isCancelled, let self, self.info?.displayFile == file, self.info?.rotation == rotation
             else { return }
             self.cellView.setImage(image, failed: image == nil)
         }

@@ -348,8 +348,10 @@ public final class Scanner: Sendable {
             report.failed.append(Self.relative(group.sidecar ?? group.sidecarURLForWriting, root: root))
         }
 
+        // A sidecar value that only repeats the file's own orientation is no override.
+        let rotation = SidecarIO.rotation(of: group, override: metadata.orientation)
         var infos: [MediaInfo] = []
-        for v in group.versions { infos.append(await MediaInfoReader.read(v.file.url, kind: v.kind, orientation: metadata.orientation)) }
+        for v in group.versions { infos.append(await MediaInfoReader.read(v.file.url, kind: v.kind, rotation: rotation?.exif)) }
         let displayIndex = group.versions.firstIndex(of: display) ?? 0
         let displayInfo = infos[displayIndex]
         let captureDate = displayInfo.captureDate ?? infos.compactMap(\.captureDate).first ?? display.file.created
@@ -363,7 +365,8 @@ public final class Scanner: Sendable {
             cameraModel: camera, lensModel: lens,
             hasRaw: group.versions.contains { $0.kind == .raw },
             hasVideo: group.versions.contains { $0.kind == .video || $0.kind == .live },
-            sidecarModified: sidecarModified, legacySidecarFingerprint: legacy, orientationOverride: metadata.orientation)
+            sidecarModified: sidecarModified, legacySidecarFingerprint: legacy, orientationOverride: rotation == nil ? nil : metadata.orientation,
+            rotation: rotation?.exif)
 
         return try await index.dbPool.write { [photo, group, infos, metadata, display] db in
             var photo = photo

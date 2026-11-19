@@ -2,7 +2,6 @@ import CoreGraphics
 import Foundation
 import ImageIO
 import Testing
-import UniformTypeIdentifiers
 import LoupeCore
 import LoupeTestSupport
 @testable import LoupeMedia
@@ -17,33 +16,8 @@ private func mediaFile(_ url: URL) -> MediaFile {
     return MediaFile(url: url, size: size, modified: modified, created: modified)
 }
 
-/// A lossless 40×20 TIFF with four flat quadrants of different colours, tagged with `orientation`.
-private func quadrantTIFF(at url: URL, orientation: Int) throws {
-    let w = 40, h = 20
-    let ctx = try #require(CGContext(
-        data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0,
-        space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue))
-    let colours: [(CGFloat, CGFloat, CGFloat)] = [(1, 0, 0), (0, 1, 0), (0, 0, 1), (1, 1, 0)]
-    for (i, c) in colours.enumerated() {
-        ctx.setFillColor(CGColor(srgbRed: c.0, green: c.1, blue: c.2, alpha: 1))
-        ctx.fill(CGRect(x: (i % 2) * w / 2, y: (i / 2) * h / 2, width: w / 2, height: h / 2))
-    }
-    let image = try #require(ctx.makeImage())
-    let dest = try #require(CGImageDestinationCreateWithURL(url as CFURL, UTType.tiff.identifier as CFString, 1, nil))
-    CGImageDestinationAddImage(dest, image, [kCGImagePropertyOrientation: orientation] as CFDictionary)
-    #expect(CGImageDestinationFinalize(dest))
-}
-
-private func pixels(_ image: CGImage) throws -> [Int] {
-    let w = image.width, h = image.height
-    var bytes = [UInt8](repeating: 0, count: w * h * 4)
-    let ctx = try #require(CGContext(
-        data: &bytes, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
-        space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
-    ctx.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
-    return [w, h] + bytes.map(Int.init)
-}
-
+/// `rotation` is the photo's extra turn (the sidecar's `tiff:Orientation` relative to the file it describes),
+/// applied on top of each file's own orientation.
 @Suite struct OrientedRenderingTests {
     let dir: URL
 
@@ -55,81 +29,88 @@ private func pixels(_ image: CGImage) throws -> [Int] {
         return url
     }
 
-    @Test func thumbnailHonoursOverride() async throws {
+    @Test func thumbnailHonoursRotation() async throws {
         defer { try? FileManager.default.removeItem(at: dir) }
         let cache = ThumbnailCache(directory: dir.appendingPathComponent("cache"))
         let file = mediaFile(try jpeg("a.jpg"))
-        let plain = try #require(await cache.thumbnail(for: file, kind: .jpeg, orientation: nil))
+        let plain = try #require(await cache.thumbnail(for: file, kind: .jpeg, rotation: nil))
         #expect(plain.width > plain.height)
-        let turned = try #require(await cache.thumbnail(for: file, kind: .jpeg, orientation: 6))
+        let turned = try #require(await cache.thumbnail(for: file, kind: .jpeg, rotation: 6))
         #expect(turned.height > turned.width)
-        // A file shown portrait by its own EXIF, overridden back to 1.
+        // A file shown portrait by its own EXIF, turned a quarter back.
         let upright = mediaFile(try jpeg("b.jpg", orientation: 6))
-        let own = try #require(await cache.thumbnail(for: upright, kind: .jpeg, orientation: nil))
+        let own = try #require(await cache.thumbnail(for: upright, kind: .jpeg, rotation: nil))
         #expect(own.height > own.width)
-        let back = try #require(await cache.thumbnail(for: upright, kind: .jpeg, orientation: 1))
+        let back = try #require(await cache.thumbnail(for: upright, kind: .jpeg, rotation: 8))
         #expect(back.width > back.height)
     }
 
-    @Test func overrideChangesCacheKey() async throws {
+    @Test func rotationChangesCacheKey() async throws {
         defer { try? FileManager.default.removeItem(at: dir) }
         let file = mediaFile(try jpeg("a.jpg"))
-        let keys = [nil, 1, 3, 6, 8].map { ThumbnailCache.key(for: file, orientation: $0) }
+        let keys = [nil, 2, 3, 6, 8].map { ThumbnailCache.key(for: file, rotation: $0) }
         #expect(Set(keys).count == keys.count)
+        #expect(ThumbnailCache.key(for: file, rotation: 1) == ThumbnailCache.key(for: file, rotation: nil))
         // A cached rotated thumbnail is never handed out for the unrotated photo (or the other way round).
         let cache = ThumbnailCache(directory: dir.appendingPathComponent("cache"))
-        _ = await cache.thumbnail(for: file, kind: .jpeg, orientation: 6)
-        let plain = try #require(await cache.thumbnail(for: file, kind: .jpeg, orientation: nil))
+        _ = await cache.thumbnail(for: file, kind: .jpeg, rotation: 6)
+        let plain = try #require(await cache.thumbnail(for: file, kind: .jpeg, rotation: nil))
         #expect(plain.width > plain.height)
-        let turned = try #require(await cache.thumbnail(for: file, kind: .jpeg, orientation: 6))
+        let turned = try #require(await cache.thumbnail(for: file, kind: .jpeg, rotation: 6))
         #expect(turned.height > turned.width)
     }
 
-    @Test func loaderHonoursOverride() throws {
+    @Test func loaderHonoursRotation() throws {
         defer { try? FileManager.default.removeItem(at: dir) }
         let url = try jpeg("a.jpg")
-        let plain = try #require(ImageLoader.image(at: url, maxPixelSize: 1000, orientation: nil))
+        let plain = try #require(ImageLoader.image(at: url, maxPixelSize: 1000, rotation: nil))
         #expect(plain.width == 400 && plain.height == 300)
-        let turned = try #require(ImageLoader.image(at: url, maxPixelSize: 1000, orientation: 8))
+        let turned = try #require(ImageLoader.image(at: url, maxPixelSize: 1000, rotation: 8))
         #expect(turned.width == 300 && turned.height == 400)
-        let flipped = try #require(ImageLoader.image(at: url, maxPixelSize: 1000, orientation: 3))
+        let flipped = try #require(ImageLoader.image(at: url, maxPixelSize: 1000, rotation: 3))
         #expect(flipped.width == 400 && flipped.height == 300)
     }
 
-    /// Every embedded orientation (mirrored ones included) overridden with every orientation looks exactly like a
-    /// file that has the override as its own orientation.
-    @Test func overrideOnAnyEmbeddedMatchesNativeOrientation() async throws {
+    /// For every own orientation (mirrored ones included) and every rotation: the file is shown as it shows by
+    /// itself, then turned; that equals a file whose own orientation is the composition.
+    @Test func rotationOnTopOfAnyOwnOrientation() async throws {
         defer { try? FileManager.default.removeItem(at: dir) }
         var native: [Int: [Int]] = [:]
         for o in 1...8 {
             let url = dir.appendingPathComponent("native-\(o).tif")
-            try quadrantTIFF(at: url, orientation: o)
-            native[o] = try pixels(try #require(ImageLoader.image(at: url, maxPixelSize: 40, orientation: nil)))
+            try TestImages.makeQuadrantTIFF(at: url, width: 40, height: 20, orientation: o)
+            native[o] = TestImages.pixels(try #require(ImageLoader.image(at: url, maxPixelSize: 40, rotation: nil)))
         }
         let cache = ThumbnailCache(directory: dir.appendingPathComponent("cache"), maxPixelSize: 40)
-        for embedded in 1...8 {
-            let url = dir.appendingPathComponent("native-\(embedded).tif")
-            for override in 1...8 {
-                let loaded = try #require(ImageLoader.image(at: url, maxPixelSize: 40, orientation: override))
-                #expect(try pixels(loaded) == native[override], "embedded \(embedded), override \(override)")
-                let thumb = try #require(await cache.thumbnail(for: mediaFile(url), kind: .image, orientation: override))
-                #expect(thumb.width == loaded.width && thumb.height == loaded.height)
+        for own in 1...8 {
+            let url = dir.appendingPathComponent("native-\(own).tif")
+            let shown = try #require(ImageLoader.image(at: url, maxPixelSize: 40, rotation: nil))
+            for r in 1...8 {
+                let rotation = Orientation(exif: r)!
+                let loaded = try #require(ImageLoader.image(at: url, maxPixelSize: 40, rotation: r))
+                #expect(TestImages.pixels(loaded) == TestImages.pixels(try #require(rotation.apply(to: shown))))
+                let composed = rotation.composed(after: Orientation(exif: own)!).exif
+                #expect(TestImages.pixels(loaded) == native[composed], "own \(own), rotation \(r)")
+                let thumb = try #require(await cache.thumbnail(for: mediaFile(url), kind: .image, rotation: r))
+                #expect(TestImages.pixels(thumb) == TestImages.pixels(loaded))
             }
         }
     }
 
-    @Test func mediaInfoSwapsForEffectiveOrientation() async throws {
+    @Test func mediaInfoSwapsForRotation() async throws {
         defer { try? FileManager.default.removeItem(at: dir) }
         let plain = try jpeg("a.jpg")
-        var info = await MediaInfoReader.read(plain, kind: .jpeg, orientation: nil)
+        var info = await MediaInfoReader.read(plain, kind: .jpeg, rotation: nil)
         #expect(info.pixelWidth == 400 && info.pixelHeight == 300)
-        info = await MediaInfoReader.read(plain, kind: .jpeg, orientation: 6)
+        info = await MediaInfoReader.read(plain, kind: .jpeg, rotation: 6)
         #expect(info.pixelWidth == 300 && info.pixelHeight == 400)
         let portrait = try jpeg("b.jpg", orientation: 8)
-        info = await MediaInfoReader.read(portrait, kind: .jpeg, orientation: nil)
+        info = await MediaInfoReader.read(portrait, kind: .jpeg, rotation: nil)
         #expect(info.pixelWidth == 300 && info.pixelHeight == 400)
-        info = await MediaInfoReader.read(portrait, kind: .jpeg, orientation: 2)
+        info = await MediaInfoReader.read(portrait, kind: .jpeg, rotation: 6)
         #expect(info.pixelWidth == 400 && info.pixelHeight == 300)
+        info = await MediaInfoReader.read(portrait, kind: .jpeg, rotation: 2)
+        #expect(info.pixelWidth == 300 && info.pixelHeight == 400)
     }
 
     /// The dev RAW's own orientation (6) comes from the RAW metadata, not from a JPEG's EXIF.
@@ -138,13 +119,14 @@ private func pixels(_ image: CGImage) throws -> [Int] {
         defer { try? FileManager.default.removeItem(at: dir) }
         let url = URL(fileURLWithPath: devRaw)
         let cache = ThumbnailCache(directory: dir.appendingPathComponent("cache"))
-        let own = try #require(await cache.thumbnail(for: mediaFile(url), kind: .raw, orientation: nil))
+        let own = try #require(await cache.thumbnail(for: mediaFile(url), kind: .raw, rotation: nil))
         #expect(own.height > own.width)
-        let unrotated = try #require(await cache.thumbnail(for: mediaFile(url), kind: .raw, orientation: 1))
-        #expect(unrotated.width > unrotated.height)
-        let loaded = try #require(ImageLoader.image(at: url, maxPixelSize: 600, orientation: 1))
+        let turnedBack = try #require(await cache.thumbnail(for: mediaFile(url), kind: .raw, rotation: 8))
+        #expect(turnedBack.width > turnedBack.height)
+        let loaded = try #require(ImageLoader.image(at: url, maxPixelSize: 600, rotation: 8))
         #expect(loaded.width > loaded.height)
-        let info = await MediaInfoReader.read(url, kind: .raw, orientation: 1)
+        #expect(await MediaInfoReader.read(url, kind: .raw, rotation: nil).pixelWidth == 3456)
+        let info = await MediaInfoReader.read(url, kind: .raw, rotation: 8)
         #expect(info.pixelWidth == 5184 && info.pixelHeight == 3456)
     }
 }

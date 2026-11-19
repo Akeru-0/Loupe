@@ -4,28 +4,27 @@ import ImageIO
 import LoupeCore
 
 public enum ImageLoader {
-    /// Decodes an image shown with its effective orientation (`orientation`, the sidecar's override, else the
-    /// file's own) whose long edge is at most `maxPixelSize`. Also renders RAW.
-    public static func image(at url: URL, maxPixelSize: Int, orientation: Int?) -> CGImage? {
+    /// Decodes an image whose long edge is at most `maxPixelSize`, shown with its own orientation and then turned
+    /// by `rotation` (the photo's extra turn, `Orientation.rotation(override:baseEmbedded:)`). Also renders RAW.
+    public static func image(at url: URL, maxPixelSize: Int, rotation: Int?) -> CGImage? {
         guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
-        return image(from: source, maxPixelSize: maxPixelSize, orientation: orientation)
+        return image(from: source, maxPixelSize: maxPixelSize, rotation: rotation)
     }
 
-    public static func image(from source: CGImageSource, maxPixelSize: Int, orientation: Int?) -> CGImage? {
+    public static func image(from source: CGImageSource, maxPixelSize: Int, rotation: Int?) -> CGImage? {
         let options: [CFString: Any] = [
             kCGImageSourceCreateThumbnailFromImageAlways: true,
             kCGImageSourceCreateThumbnailWithTransform: true,
             kCGImageSourceThumbnailMaxPixelSize: maxPixelSize,
         ]
         guard let decoded = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { return nil }
-        return oriented(decoded, source: source, override: orientation)
+        return turned(decoded, by: rotation)
     }
 
-    /// The one orientation rule every renderer uses. `decoded` came from `source` with the file's own orientation
-    /// applied (`kCGImageSourceCreateThumbnailWithTransform`); with an override, it is turned on from there.
-    static func oriented(_ decoded: CGImage, source: CGImageSource, override: Int?) -> CGImage? {
-        guard let target = override.flatMap(Orientation.init(exif:)) else { return decoded }
-        let own = Orientation.effective(override: nil, embedded: Orientation.embedded(in: source))
-        return target.relative(to: own).apply(to: decoded)
+    /// The one rendering rule: `decoded` already shows the file's own orientation
+    /// (`kCGImageSourceCreateThumbnailWithTransform`); the photo's rotation is applied on top.
+    static func turned(_ decoded: CGImage, by rotation: Int?) -> CGImage? {
+        guard let turn = Orientation.turn(rotation) else { return decoded }
+        return turn.apply(to: decoded)
     }
 }

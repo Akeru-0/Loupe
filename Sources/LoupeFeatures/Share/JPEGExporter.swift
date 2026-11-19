@@ -32,7 +32,7 @@ public struct JPEGExporter: ShareExporter {
         ]
     }
 
-    public func export(_ file: URL, kind: VersionKind, orientation: Int?, removeLocation: Bool, into directory: URL) throws -> URL {
+    public func export(_ file: URL, kind: VersionKind, rotation: Int?, removeLocation: Bool, into directory: URL) throws -> URL {
         guard let source = CGImageSourceCreateWithURL(file as CFURL, nil) else { throw ShareExportError.unreadable(file) }
         let sourceProps = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any] ?? [:]
         let w = (sourceProps[kCGImagePropertyPixelWidth] as? Int) ?? 0
@@ -41,7 +41,7 @@ public struct JPEGExporter: ShareExporter {
         if let maxLongEdge { longEdge = longEdge > 0 ? min(longEdge, maxLongEdge) : maxLongEdge }
         guard longEdge > 0 else { throw ShareExportError.unreadable(file) }
 
-        guard let image = ImageLoader.image(from: source, maxPixelSize: longEdge, orientation: orientation)
+        guard let image = ImageLoader.image(from: source, maxPixelSize: longEdge, rotation: rotation)
         else { throw ShareExportError.unreadable(file) }
 
         var props: [CFString: Any] = [

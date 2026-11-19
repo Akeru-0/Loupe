@@ -24,15 +24,15 @@ private let devRaw = URL(fileURLWithPath: #filePath)
         let cache = ThumbnailCache(directory: cacheDir)
         let file = mediaFile(src)
 
-        let first = try #require(await cache.thumbnail(for: file, kind: .jpeg, orientation: nil))
+        let first = try #require(await cache.thumbnail(for: file, kind: .jpeg, rotation: nil))
         #expect((256...512).contains(max(first.width, first.height)))
 
-        let key = ThumbnailCache.key(for: file, orientation: nil)
+        let key = ThumbnailCache.key(for: file, rotation: nil)
         let cached = cacheDir.appendingPathComponent(String(key.prefix(2))).appendingPathComponent("\(key).jpg")
         #expect(FileManager.default.fileExists(atPath: cached.path))
 
         try FileManager.default.removeItem(at: src)
-        let second = await cache.thumbnail(for: file, kind: .jpeg, orientation: nil)
+        let second = await cache.thumbnail(for: file, kind: .jpeg, rotation: nil)
         #expect(second != nil)
     }
 
@@ -49,14 +49,14 @@ private let devRaw = URL(fileURLWithPath: #filePath)
         }
         let sizes = await withTaskGroup(of: Int?.self) { group in
             for file in files {
-                group.addTask { await cache.thumbnail(for: file, kind: .jpeg, orientation: nil).map { max($0.width, $0.height) } }
+                group.addTask { await cache.thumbnail(for: file, kind: .jpeg, rotation: nil).map { max($0.width, $0.height) } }
             }
             return await group.reduce(into: [Int?]()) { $0.append($1) }
         }
         #expect(sizes.count == 6)
         #expect(sizes.allSatisfy { $0 != nil && (256...512).contains($0!) })
         for file in files {
-            let key = ThumbnailCache.key(for: file, orientation: nil)
+            let key = ThumbnailCache.key(for: file, rotation: nil)
             let path = cacheDir.appendingPathComponent(String(key.prefix(2))).appendingPathComponent("\(key).jpg").path
             #expect(FileManager.default.fileExists(atPath: path))
         }
@@ -67,7 +67,7 @@ private let devRaw = URL(fileURLWithPath: #filePath)
         let a = MediaFile(url: url, size: 10, modified: Date(timeIntervalSince1970: 1), created: Date(timeIntervalSince1970: 1))
         var b = a
         b.modified = Date(timeIntervalSince1970: 2)
-        #expect(ThumbnailCache.key(for: a, orientation: nil) != ThumbnailCache.key(for: b, orientation: nil))
+        #expect(ThumbnailCache.key(for: a, rotation: nil) != ThumbnailCache.key(for: b, rotation: nil))
     }
 
     @Test func unreadableMediaYieldsNil() async throws {
@@ -80,10 +80,10 @@ private let devRaw = URL(fileURLWithPath: #filePath)
         let cacheDir = dir.appendingPathComponent("cache")
         let cache = ThumbnailCache(directory: cacheDir)
 
-        #expect(await cache.thumbnail(for: mediaFile(empty), kind: .jpeg, orientation: nil) == nil)
-        #expect(await cache.thumbnail(for: mediaFile(junk), kind: .video, orientation: nil) == nil)
-        #expect(await MediaInfoReader.read(empty, kind: .jpeg, orientation: nil) == MediaInfo())
-        #expect(await MediaInfoReader.read(junk, kind: .video, orientation: nil) == MediaInfo())
+        #expect(await cache.thumbnail(for: mediaFile(empty), kind: .jpeg, rotation: nil) == nil)
+        #expect(await cache.thumbnail(for: mediaFile(junk), kind: .video, rotation: nil) == nil)
+        #expect(await MediaInfoReader.read(empty, kind: .jpeg, rotation: nil) == MediaInfo())
+        #expect(await MediaInfoReader.read(junk, kind: .video, rotation: nil) == MediaInfo())
 
         let written = FileManager.default.enumerator(at: cacheDir, includingPropertiesForKeys: nil)?
             .allObjects.compactMap { $0 as? URL } ?? []
@@ -96,7 +96,7 @@ private let devRaw = URL(fileURLWithPath: #filePath)
         defer { try? FileManager.default.removeItem(at: dir) }
         let url = dir.appendingPathComponent("a.jpg")
         try TestImages.makeJPEG(at: url, width: 400, height: 300, orientation: 6)
-        let image = try #require(ImageLoader.image(at: url, maxPixelSize: 1000, orientation: nil))
+        let image = try #require(ImageLoader.image(at: url, maxPixelSize: 1000, rotation: nil))
         #expect(image.width == 300)
         #expect(image.height == 400)
     }
@@ -107,7 +107,7 @@ private let devRaw = URL(fileURLWithPath: #filePath)
         defer { try? FileManager.default.removeItem(at: dir) }
         let cache = ThumbnailCache(directory: dir)
         let file = mediaFile(URL(fileURLWithPath: devRaw))
-        let image = try #require(await cache.thumbnail(for: file, kind: .raw, orientation: nil))
+        let image = try #require(await cache.thumbnail(for: file, kind: .raw, rotation: nil))
         #expect(max(image.width, image.height) >= 256)
     }
 }

@@ -19,8 +19,8 @@ public struct ShareAction: PhotoAction {
     }
 
     /// Each file with its photo's orientation override.
-    private static func files(for selection: ActionSelection) -> [(url: URL, kind: VersionKind, orientation: Int?)] {
-        selection.targets().map { ($0.url, $0.version.kind, $0.photo?.orientationOverride) }
+    private static func files(for selection: ActionSelection) -> [(url: URL, kind: VersionKind, rotation: Int?)] {
+        selection.targets().map { ($0.url, $0.version.kind, $0.photo?.rotation) }
     }
 
     @MainActor public func entries(for selection: ActionSelection) -> [ActionMenuEntry] {
@@ -36,7 +36,7 @@ public struct ShareAction: PhotoAction {
             var urls: [URL] = []
             for file in files {
                 do {
-                    urls.append(try exporter.export(file.url, kind: file.kind, orientation: file.orientation, removeLocation: removeLocation, into: outputDirectory))
+                    urls.append(try exporter.export(file.url, kind: file.kind, rotation: file.rotation, removeLocation: removeLocation, into: outputDirectory))
                 } catch {
                     context.present(error)
                 }
@@ -52,7 +52,7 @@ public struct ShareAction: PhotoAction {
                 if removeLocation, files.contains(where: { !OriginalExporter.canStripLocation($0.url) }) {
                     notes.append("location kept")
                 }
-                if files.contains(where: { $0.orientation != nil && !OriginalExporter.canSetOrientation($0.url) }) {
+                if files.contains(where: { $0.rotation != nil && !OriginalExporter.canSetOrientation($0.url) }) {
                     notes.append("rotation not applied")
                 }
                 if !notes.isEmpty { title += " (\(notes.joined(separator: ", ")))" }

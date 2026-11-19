@@ -14,29 +14,29 @@ public actor ThumbnailCache {
         self.maxPixelSize = maxPixelSize
     }
 
-    /// `orientation` is the photo's override: a rotated photo gets its own thumbnail.
-    public nonisolated static func key(for file: MediaFile, orientation: Int?) -> String {
+    /// `rotation` is the photo's extra turn: a rotated photo gets its own thumbnail.
+    public nonisolated static func key(for file: MediaFile, rotation: Int?) -> String {
         var text = "\(file.url.path)|\(file.size)|\(file.modified.timeIntervalSince1970)"
-        if let orientation { text += "|o\(orientation)" }
+        if let turn = Orientation.turn(rotation) { text += "|o\(turn.exif)" }
         return SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }.joined()
     }
 
     /// The actor only holds configuration; all I/O and decoding runs in nonisolated async
     /// statics so concurrent requests are not serialised on the actor.
-    /// `orientation` is the photo's override (the sidecar's `tiff:Orientation`); nil shows the file's own.
+    /// `rotation` is the photo's extra turn on top of the file's own orientation (`ImageLoader`); nil for none.
     /// Videos always show their own orientation.
-    public func thumbnail(for file: MediaFile, kind: VersionKind, orientation: Int?) async -> CGImage? {
+    public func thumbnail(for file: MediaFile, kind: VersionKind, rotation: Int?) async -> CGImage? {
         let isMotion = kind == .video || kind == .live
         return await Self.load(
-            file, kind: kind, orientation: isMotion ? nil : orientation, directory: directory, maxPixelSize: maxPixelSize)
+            file, kind: kind, rotation: isMotion ? nil : rotation, directory: directory, maxPixelSize: maxPixelSize)
     }
 
     private nonisolated static func load(
-        _ file: MediaFile, kind: VersionKind, orientation: Int?, directory: URL, maxPixelSize: Int
+        _ file: MediaFile, kind: VersionKind, rotation: Int?, directory: URL, maxPixelSize: Int
     ) async -> CGImage? {
         // A grid cell scrolled away before its request ran: skip the work.
         guard !Task.isCancelled else { return nil }
-        let key = key(for: file, orientation: orientation)
+        let key = key(for: file, rotation: rotation)
         let cached = directory.appendingPathComponent(String(key.prefix(2)))
             .appendingPathComponent("\(key).jpg")
         // Decode now, here: a lazily decoded image would read and decode the file when first drawn, on the main thread.
@@ -51,14 +51,14 @@ public actor ThumbnailCache {
         let image: CGImage?
         switch kind {
         case .video, .live: image = await videoThumbnail(file.url, maxPixelSize: maxPixelSize)
-        default: image = imageThumbnail(file.url, maxPixelSize: maxPixelSize, orientation: orientation)
+        default: image = imageThumbnail(file.url, maxPixelSize: maxPixelSize, rotation: rotation)
         }
         guard let image else { return nil }
         write(image, to: cached)
         return image
     }
 
-    private nonisolated static func imageThumbnail(_ url: URL, maxPixelSize: Int, orientation: Int?) -> CGImage? {
+    private nonisolated static func imageThumbnail(_ url: URL, maxPixelSize: Int, rotation: Int?) -> CGImage? {
         guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
         func make(always: Bool) -> CGImage? {
             let options: [CFString: Any] = [
@@ -74,7 +74,7 @@ public actor ThumbnailCache {
         } else {
             made = make(always: true)
         }
-        return made.flatMap { ImageLoader.oriented($0, source: source, override: orientation) }
+        return made.flatMap { ImageLoader.turned($0, by: rotation) }
     }
 
     private nonisolated static func videoThumbnail(_ url: URL, maxPixelSize: Int) async -> CGImage? {
