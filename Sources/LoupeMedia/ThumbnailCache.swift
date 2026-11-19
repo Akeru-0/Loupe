@@ -17,7 +17,7 @@ public actor ThumbnailCache {
     /// `rotation` is the photo's extra turn: a rotated photo gets its own thumbnail.
     public nonisolated static func key(for file: MediaFile, rotation: Int?) -> String {
         var text = "\(file.url.path)|\(file.size)|\(file.modified.timeIntervalSince1970)"
-        if let turn = Orientation.turn(rotation) { text += "|o\(turn.exif)" }
+        if let turn = Orientation.turn(rotation) { text += "|r\(turn.exif)" }
         return SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }.joined()
     }
 

@@ -18,7 +18,7 @@ public struct ShareAction: PhotoAction {
         self.defaults = defaults
     }
 
-    /// Each file with its photo's orientation override.
+    /// Each file with its photo's rotation.
     private static func files(for selection: ActionSelection) -> [(url: URL, kind: VersionKind, rotation: Int?)] {
         selection.targets().map { ($0.url, $0.version.kind, $0.photo?.rotation) }
     }

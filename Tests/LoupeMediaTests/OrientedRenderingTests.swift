@@ -1,4 +1,5 @@
 import CoreGraphics
+import CryptoKit
 import Foundation
 import ImageIO
 import Testing
@@ -51,6 +52,11 @@ private func mediaFile(_ url: URL) -> MediaFile {
         let keys = [nil, 2, 3, 6, 8].map { ThumbnailCache.key(for: file, rotation: $0) }
         #expect(Set(keys).count == keys.count)
         #expect(ThumbnailCache.key(for: file, rotation: 1) == ThumbnailCache.key(for: file, rotation: nil))
+        // The earlier build tagged its orientation override "|o<n>": those disk thumbnails must not be reused.
+        let base = "\(file.url.path)|\(file.size)|\(file.modified.timeIntervalSince1970)"
+        func hash(_ text: String) -> String { SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }.joined() }
+        #expect(ThumbnailCache.key(for: file, rotation: 6) == hash(base + "|r6"))
+        #expect(ThumbnailCache.key(for: file, rotation: 6) != hash(base + "|o6"))
         // A cached rotated thumbnail is never handed out for the unrotated photo (or the other way round).
         let cache = ThumbnailCache(directory: dir.appendingPathComponent("cache"))
         _ = await cache.thumbnail(for: file, kind: .jpeg, rotation: 6)
