@@ -1,10 +1,24 @@
 import AppKit
 
-/// Grid geometry: square items, `spacing` between items and rows, a column count per browse mode.
+/// Grid geometry: square items, `spacing(columns:)` between items, rows and at the side edges, a column count per
+/// browse mode.
 public enum GridLayout {
     public static let columnRange = 3...15
-    public static let spacing: CGFloat = 2
     public static let headerHeight: CGFloat = 40
+
+    /// Gap between photos as a share of the tile's side, so the grid looks equally airy at every zoom level
+    /// and window size.
+    public static let spacingRatio: CGFloat = 0.08
+
+    /// Tile side and gap for a row of `columns` tiles with a gap between tiles and at both side edges:
+    /// `width = columns·side + (columns + 1)·gap`, `gap = spacingRatio·side` (rounded, at least 3 pt).
+    public static func metrics(containerWidth: CGFloat, columns: Int) -> (side: CGFloat, spacing: CGFloat) {
+        let n = CGFloat(max(1, columns))
+        let roughSide = containerWidth / (n + spacingRatio * (n + 1))
+        let spacing = max(3, (roughSide * spacingRatio).rounded())
+        let side = max(1, (containerWidth - spacing * (n + 1)) / n)
+        return (side, spacing)
+    }
 
     public static func itemSide(containerWidth: CGFloat, columns: Int, spacing: CGFloat = 2) -> CGFloat {
         let n = max(1, columns)

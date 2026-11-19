@@ -10,6 +10,22 @@ import Testing
         #expect(GridLayout.itemSide(containerWidth: 300, columns: 1) == 300)
     }
 
+    @Test func gapIsAShareOfTheTileAndRowFillsWidth() {
+        for width in [600.0, 1200.0, 2400.0] as [CGFloat] {
+            for c in GridLayout.columnRange {
+                let (side, gap) = GridLayout.metrics(containerWidth: width, columns: c)
+                // tiles + gaps between them + both edge gaps fill the width exactly
+                #expect(abs(CGFloat(c) * side + CGFloat(c + 1) * gap - width) < 0.001)
+                #expect(gap >= 3)
+                if side * GridLayout.spacingRatio >= 3 { #expect(abs(gap - side * GridLayout.spacingRatio) <= 1) }
+            }
+        }
+        // 1200 pt wide, 10 columns → ~110 pt tiles with ~9 pt gaps; zooming out narrows the gap
+        #expect(GridLayout.metrics(containerWidth: 1200, columns: 10).spacing == 9)
+        #expect(GridLayout.metrics(containerWidth: 1200, columns: 3).spacing >
+                GridLayout.metrics(containerWidth: 1200, columns: 15).spacing)
+    }
+
     @Test func defaultColumnsPerMode() {
         #expect(GridLayout.defaultColumns(for: .years) == 14)
         #expect(GridLayout.defaultColumns(for: .months) == 10)

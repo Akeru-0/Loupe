@@ -578,16 +578,18 @@ import Observation
         return NSCollectionViewCompositionalLayout(sectionProvider: { [weak self] index, environment in
             guard let self else { return nil }
             let columns = self.columns
-            let side = GridLayout.itemSide(containerWidth: environment.container.effectiveContentSize.width, columns: columns)
+            let (side, spacing) = GridLayout.metrics(
+                containerWidth: environment.container.effectiveContentSize.width, columns: columns)
             let item = NSCollectionLayoutItem(layoutSize: NSCollectionLayoutSize(
                 widthDimension: .fractionalWidth(1 / CGFloat(columns)), heightDimension: .fractionalHeight(1)))
             let group = NSCollectionLayoutGroup.horizontal(
                 layoutSize: NSCollectionLayoutSize(widthDimension: .fractionalWidth(1), heightDimension: .absolute(side)),
                 subitem: item, count: columns)
-            group.interItemSpacing = .fixed(GridLayout.spacing)
+            group.interItemSpacing = .fixed(spacing)
             let section = NSCollectionLayoutSection(group: group)
-            section.interGroupSpacing = GridLayout.spacing
-            section.contentInsets = NSDirectionalEdgeInsets(top: 0, leading: 0, bottom: GridLayout.spacing, trailing: 0)
+            section.interGroupSpacing = spacing
+            section.contentInsets = NSDirectionalEdgeInsets(
+                top: spacing, leading: spacing, bottom: spacing, trailing: spacing)
             // Date groupings have titles; All Photos has one untitled section and no header.
             if let title = self.section(at: index)?.title, !title.isEmpty {
                 let header = NSCollectionLayoutBoundarySupplementaryItem(
