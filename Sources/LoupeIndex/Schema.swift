@@ -96,10 +96,38 @@ enum Schema {
             try db.execute(sql: "ALTER TABLE photo ADD COLUMN rotation INTEGER")
             try markSidecarPhotosForRescan(db)
         }
+        migrator.registerMigration("v6") { db in
+            // Recently Edited: when the photo was last edited (the scanner sets it from now on).
+            // Duplicates: the files with a byte-identical copy in another photo group, per duplicate set.
+            try db.execute(sql: """
+                ALTER TABLE photo ADD COLUMN lastEditedAt DOUBLE;
+                CREATE INDEX photo_lastEditedAt ON photo(lastEditedAt);
+                CREATE TABLE duplicate_member (
+                    setId INTEGER NOT NULL,
+                    versionPath TEXT PRIMARY KEY NOT NULL,
+                    photoId INTEGER NOT NULL REFERENCES photo(id) ON DELETE CASCADE,
+                    sha256 TEXT NOT NULL
+                );
+                CREATE INDEX duplicate_member_photoId ON duplicate_member(photoId);
+                """)
+            try fillLastEditedAt(db)
+        }
         return migrator
     }
 
     static let rescanMarker = "rescan"
+
+    /// `lastEditedAt` from what the index already holds, by the scanner's rule (`Scanner.lastEditedAt`): the newest
+    /// edit version's mtime, or the sidecar's if it has LightCraft edits and is newer. Unchanged photos are not
+    /// re-read by the next scan, so they get it here. Idempotent.
+    static func fillLastEditedAt(_ db: Database) throws {
+        try db.execute(sql: """
+            UPDATE photo SET lastEditedAt = NULLIF(MAX(
+                COALESCE((SELECT MAX(v.modified) FROM version v WHERE v.photoId = photo.id AND v.kind = 'edit'), -1e18),
+                CASE WHEN hasLightCraftEdits = 1 AND sidecarModified IS NOT NULL THEN sidecarModified ELSE -1e18 END
+            ), -1e18)
+            """)
+    }
 
     /// Photos with a sidecar are re-read on the next scan, so a `tiff:Orientation` written before v4 is picked up.
     /// No real fingerprint equals the marker (they all contain "@"), so the scanner sees those photos as changed.

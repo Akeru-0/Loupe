@@ -366,7 +366,8 @@ public final class Scanner: Sendable {
             hasRaw: group.versions.contains { $0.kind == .raw },
             hasVideo: group.versions.contains { $0.kind == .video || $0.kind == .live },
             sidecarModified: sidecarModified, legacySidecarFingerprint: legacy, orientationOverride: rotation == nil ? nil : metadata.orientation,
-            rotation: rotation?.exif)
+            rotation: rotation?.exif,
+            lastEditedAt: Self.lastEditedAt(group, sidecarModified: sidecarModified, hasLightCraftEdits: metadata.hasLightCraftEdits))
 
         return try await index.dbPool.write { [photo, group, infos, metadata, display] db in
             var photo = photo
@@ -393,6 +394,13 @@ public final class Scanner: Sendable {
             }
             return pid
         }
+    }
+
+    /// The newest of: the newest edit version's mtime, and the sidecar's mtime if the photo has LightCraft edits
+    /// (LightCraft edits live in the sidecar). Nil for a photo never edited.
+    static func lastEditedAt(_ group: PhotoGroup, sidecarModified: Date?, hasLightCraftEdits: Bool) -> Date? {
+        let edit = group.versions.filter { $0.kind == .edit }.map(\.file.modified).max()
+        return [edit, hasLightCraftEdits ? sidecarModified : nil].compactMap { $0 }.max()
     }
 
     // MARK: - LightCraft exports

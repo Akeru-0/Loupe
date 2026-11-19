@@ -50,6 +50,8 @@ public struct RootView: View {
         } else if let id = model.selectedItemID, model.card(forItemID: id) != nil {
             ProgressView("Opening the library…")  // the import window needs the library
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if model.query.scope == .duplicates {
+            DuplicatesView(model: model)
         } else {
             PhotoGridView(model: model)
                 .overlay { if model.photoSections.isEmpty { DetailPlaceholder(model: model) } }

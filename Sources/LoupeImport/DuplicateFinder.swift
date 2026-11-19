@@ -1,35 +1,7 @@
-import CryptoKit
 import Foundation
 import GRDB
 import LoupeCore
 import LoupeIndex
-
-/// Streamed SHA-256: memory stays at one chunk however large the file.
-public enum FileHash {
-    public static let chunkSize = 4 << 20
-
-    /// Lowercase hex SHA-256 of the file's bytes. Opens the file read-only. `uncached` reads past the page
-    /// cache (`F_NOCACHE`), so a just-written copy is verified from the disk.
-    public static func sha256(of url: URL, uncached: Bool = false) throws -> String {
-        let handle = try FileHandle(forReadingFrom: url)
-        defer { try? handle.close() }
-        if uncached { _ = fcntl(handle.fileDescriptor, F_NOCACHE, 1) }
-        var hasher = SHA256()
-        while let chunk = try autoreleasepool(invoking: { try handle.read(upToCount: chunkSize) }), !chunk.isEmpty {
-            hasher.update(data: chunk)
-        }
-        return hex(hasher.finalize())
-    }
-
-    static func hex(_ digest: SHA256.Digest) -> String { digest.map { String(format: "%02x", $0) }.joined() }
-
-    /// Size and modification time from `stat` (follows symlinks), or nil if the file is gone or not a regular file.
-    static func stamp(_ url: URL) -> (size: Int64, modified: Double)? {
-        var st = stat()
-        guard stat(url.path, &st) == 0, (st.st_mode & S_IFMT) == S_IFREG else { return nil }
-        return (Int64(st.st_size), Double(st.st_mtimespec.tv_sec) + Double(st.st_mtimespec.tv_nsec) / 1e9)
-    }
-}
 
 public struct DuplicateReport: Sendable {
     /// Card files with a byte-identical copy in the library tree or the Photos library.
@@ -152,21 +124,6 @@ public struct DuplicateFinder: Sendable {
     /// The candidate's SHA-256 from `file_hash` if its size and mtime still match, else hashed now and stored.
     /// Nil if the file is gone or unreadable.
     private func cachedHash(_ url: URL) throws -> String? {
-        guard let stamp = FileHash.stamp(url) else { return nil }
-        let path = url.path
-        let cached = try index.dbPool.read { db in
-            try Row.fetchOne(db, sql: "SELECT size, modified, sha256 FROM file_hash WHERE path = ?", arguments: [path])
-        }
-        if let cached, (cached["size"] as Int64) == stamp.size,
-            abs((cached["modified"] as Double) - stamp.modified) < 0.001
-        {
-            return cached["sha256"] as String
-        }
-        guard let sha = try? hasher(url) else { return nil }
-        // Only cache if the file did not change while it was read.
-        if let after = FileHash.stamp(url), after == stamp {
-            try FileHashRecord(path: path, size: stamp.size, modified: stamp.modified, sha256: sha).save(in: index)
-        }
-        return sha
+        try index.cachedSHA256(of: url, hasher: hasher)
     }
 }

@@ -35,10 +35,16 @@ import LoupeTestSupport
         SidebarFeature.register(in: &registry)
         let sections = registry.sidebarSections.sorted { $0.order < $1.order }
         // Folders are albums now: no separate "Folders" section, no keyword albums.
-        #expect(sections.map(\.title) == [nil, "Media Types", "Albums", "Tags"])
+        #expect(sections.map(\.title) == [nil, "Media Types", "Utilities", "Albums", "Tags"])
         let items = try sections.map { try $0.items(index: index, root: lib.root, settings: settings) }
-        try #require(items.count == 4)
+        try #require(items.count == 5)
         #expect(items[1].isEmpty)  // plain 40x30 JPEGs: no videos, panoramas or RAW, so nothing is listed
+        // Utilities are always listed; no duplicate check has run, so Duplicates has no count.
+        #expect(items[2].map(\.title) == ["Recently Edited", "Duplicates"])
+        #expect(items[2].map(\.scope) == [.recentlyEdited(days: 30), .duplicates])
+        #expect(items[2].map(\.systemImage) == ["slider.horizontal.3", "square.on.square"])
+        #expect(items[2].map(\.badge) == [nil, nil])
+        #expect(items[2].allSatisfy { $0.dropTarget == nil })
 
         let library = items[0]
         #expect(library.map(\.title) == ["Library", "Favorites", "Recently Added", "Unsorted"])
@@ -49,7 +55,7 @@ import LoupeTestSupport
 
         // The real folder tree: a folder with photos (or an empty one) is an album, a folder with only subfolders
         // is a group. Hidden, package and excluded folders are skipped; ":" on disk shows as "/".
-        let albums = items[2]
+        let albums = items[3]
         #expect(albums.map(\.title) == ["Empty", "Screen shots/recording", "Trip"])
         #expect(albums.map(\.scope) == [.folderTree("Empty"), .folder("Screen shots:recording"), .folder("Trip")])
         #expect(albums.map(\.dropTarget) == [nil, .folder("Screen shots:recording"), .folder("Trip")])
@@ -63,7 +69,7 @@ import LoupeTestSupport
         #expect(albums[2].children.map(\.title) == ["Day 1"])
         #expect(albums[2].children.map(\.dropTarget) == [.folder("Trip/Day 1")])
 
-        let tags = items[3]
+        let tags = items[4]
         #expect(tags.map(\.title) == ["Beach", "Iceland"])
         #expect(tags.map(\.scope) == [.tag("Beach"), .tag("Iceland")])
         #expect(tags.allSatisfy { $0.systemImage == "tag" && $0.dropTarget == nil })
@@ -96,5 +102,27 @@ import LoupeTestSupport
         #expect(items.map(\.scope) == [.mediaType(.panoramas), .mediaType(.raw)])
         #expect(items.map(\.systemImage) == ["pano", "camera.aperture"])
         #expect(items.allSatisfy { $0.dropTarget == nil })
+    }
+
+    @Test func duplicatesShowTheirCount() async throws {
+        let lib = try TestLibrary()
+        let fm = FileManager.default
+        try lib.addFile("a/IMG_1.jpg", bytes: Data(repeating: 1, count: 50))
+        try lib.addFile("b/IMG_1.jpg", bytes: Data(repeating: 1, count: 50))
+        try lib.addFile("a/IMG_2.jpg", bytes: Data(repeating: 2, count: 60))
+        try lib.addFile("c/IMG_2.jpg", bytes: Data(repeating: 2, count: 60))
+        let settings = LibrarySettings(rootPath: lib.root.path, recentlyAddedDays: 7)
+        let dbURL = fm.temporaryDirectory.appendingPathComponent("loupe-sidebar-\(UUID().uuidString).sqlite")
+        defer { for suffix in ["", "-wal", "-shm"] { try? fm.removeItem(atPath: dbURL.path + suffix) } }
+        let index = try LibraryIndex(databaseURL: dbURL)
+        _ = try await LoupeIndex.Scanner(index: index, location: LocalFolderLocation(rootURL: lib.root), settings: settings)
+            .fullScan()
+        try await DuplicateIndex(index: index, root: lib.root).refresh()
+        var registry = FeatureRegistry()
+        SidebarFeature.register(in: &registry)
+        let section = try #require(registry.sidebarSections.first { $0.title == "Utilities" })
+        let items = try section.items(index: index, root: lib.root, settings: settings)
+        #expect(items.map(\.scope) == [.recentlyEdited(days: 7), .duplicates])  // Recently Added's window
+        #expect(items.map(\.badge) == [nil, 2])
     }
 }

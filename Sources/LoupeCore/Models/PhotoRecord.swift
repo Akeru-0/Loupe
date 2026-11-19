@@ -26,6 +26,9 @@ public struct PhotoRecord: Codable, Hashable, Sendable, Identifiable {
     /// The extra turn (EXIF value) every version is shown with on top of its own orientation; nil for none.
     /// See `Orientation.rotation(override:baseEmbedded:)`.
     public var rotation: Int?
+    /// The newest of: the newest edit version's mtime, and the sidecar's mtime if it has LightCraft edits.
+    /// Nil for a photo never edited. Recently Edited lists by it.
+    public var lastEditedAt: Date?
 
     public init(
         id: Int64? = nil, locationId: String, folderPath: String, stem: String, stemKey: String,
@@ -33,7 +36,7 @@ public struct PhotoRecord: Codable, Hashable, Sendable, Identifiable {
         hasLightCraftEdits: Bool = false, cameraModel: String? = nil, lensModel: String? = nil,
         hasRaw: Bool = false, hasVideo: Bool = false, sidecarModified: Date? = nil,
         legacySidecarFingerprint: String? = nil, orientationOverride: Int? = nil,
-        rotation: Int? = nil
+        rotation: Int? = nil, lastEditedAt: Date? = nil
     ) {
         self.id = id
         self.locationId = locationId
@@ -53,6 +56,7 @@ public struct PhotoRecord: Codable, Hashable, Sendable, Identifiable {
         self.legacySidecarFingerprint = legacySidecarFingerprint
         self.orientationOverride = orientationOverride
         self.rotation = rotation
+        self.lastEditedAt = lastEditedAt
     }
 
     public var key: String { folderPath.isEmpty ? stem : folderPath + "/" + stem }

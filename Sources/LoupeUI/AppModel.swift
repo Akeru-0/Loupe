@@ -163,7 +163,8 @@ public struct SidebarGroup: Identifiable, Sendable {
             let message = note.userInfo?["message"] as? String ?? "\(note)"
             MainActor.assumeIsolated { self?.log(message) }
         })
-        for name in [Library.didChange, Library.albumsDidChange] {
+        // Duplicates: the sidebar shows the number of sets.
+        for name in [Library.didChange, Library.albumsDidChange, Library.duplicatesDidChange] {
             observers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
                 MainActor.assumeIsolated { self?.refreshSidebar() }
             })
@@ -328,7 +329,7 @@ public struct SidebarGroup: Identifiable, Sendable {
         guard let id = selectedItemID, let item = item(withID: id) else { return }
         selection = []
         viewerPhotoID = nil
-        query.scope = item.scope
+        query.select(item.scope)
     }
 
     // MARK: - Sidebar

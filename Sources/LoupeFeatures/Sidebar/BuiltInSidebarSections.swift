@@ -38,6 +38,26 @@ struct MediaTypesSidebarSection: SidebarSection {
     }
 }
 
+/// Recently Edited (same window as Recently Added) and Duplicates (with the number of sets once there are any).
+/// Always listed.
+struct UtilitiesSidebarSection: SidebarSection {
+    let id = "utilities"
+    let title: String? = "Utilities"
+    let order = 60
+
+    func items(index: LibraryIndex, root: URL, settings: LibrarySettings) throws -> [SidebarItem] {
+        let duplicates = try index.duplicateSetCount()
+        return [
+            SidebarItem(
+                id: "edited", title: "Recently Edited", systemImage: "slider.horizontal.3",
+                scope: .recentlyEdited(days: settings.recentlyAddedDays)),
+            SidebarItem(
+                id: "duplicates", title: "Duplicates", systemImage: "square.on.square", scope: .duplicates,
+                badge: duplicates > 0 ? duplicates : nil),
+        ]
+    }
+}
+
 /// Albums are folders: the real folder tree under the root. Albums take dropped photos; groups (folders with only
 /// subfolders) show everything below them and take no drops. Keyword albums are not shown.
 struct AlbumsSidebarSection: SidebarSection {

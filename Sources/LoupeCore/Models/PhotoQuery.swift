@@ -20,9 +20,13 @@ public struct PhotoQuery: Hashable, Sendable {
         /// Recursive: photos in this folder and in every folder below it (a group).
         case folderTree(String)
         case mediaType(MediaType)
+        /// Photos whose newest edit (`PhotoRecord.lastEditedAt`) falls within the last `days` days.
+        case recentlyEdited(days: Int)
+        /// Photos with a byte-identical copy in another photo group (Utilities ▸ Duplicates).
+        case duplicates
     }
     public enum KindFilter: Hashable, Sendable { case any, hasRaw, withoutRaw, videos, lightCraftEdited }
-    public enum SortField: Hashable, Sendable { case captureDate, added, name, rating }
+    public enum SortField: Hashable, Sendable { case captureDate, added, name, rating, edited }
     public enum Grouping: Hashable, Sendable { case none, day, month, year }
 
     public var scope: Scope
@@ -36,6 +40,18 @@ public struct PhotoQuery: Hashable, Sendable {
     public var grouping: Grouping = .none
 
     public init(scope: Scope = .all) { self.scope = scope }
+
+    /// Shows `scope` (a sidebar item was picked). Recently Edited starts newest edit first; leaving it restores the
+    /// default sort, as the edit time means nothing elsewhere. Any other switch keeps the user's sort.
+    public mutating func select(_ scope: Scope) {
+        let wasEdited = if case .recentlyEdited = self.scope { true } else { false }
+        self.scope = scope
+        if case .recentlyEdited = scope {
+            if !wasEdited { (sort, ascending) = (.edited, false) }
+        } else if sort == .edited {
+            (sort, ascending) = (.captureDate, true)
+        }
+    }
 }
 
 public struct PhotoSection: Hashable, Sendable {

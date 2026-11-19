@@ -77,6 +77,9 @@ struct LibraryToolbar: ToolbarContent {
                 Text("Date Added").tag(PhotoQuery.SortField.added)
                 Text("Name").tag(PhotoQuery.SortField.name)
                 Text("Rating").tag(PhotoQuery.SortField.rating)
+                if case .recentlyEdited = model.query.scope {
+                    Text("Date Edited").tag(PhotoQuery.SortField.edited)
+                }
             }
             .pickerStyle(.inline)
             Picker("Order", selection: $model.query.ascending) {

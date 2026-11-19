@@ -99,16 +99,24 @@ public enum FileOperations {
         return result
     }
 
+    /// Moves one file to the Trash and returns where it ended up.
+    public typealias TrashItem = @Sendable (URL) throws -> URL
+
+    /// The system Trash (`FileManager.trashItem`).
+    public static let moveToTrash: TrashItem = { url in
+        var result: NSURL?
+        try FileManager.default.trashItem(at: url, resultingItemURL: &result)
+        return (result as URL?) ?? url
+    }
+
     /// Moves every file to the Trash; returns the resulting Trash URLs. On failure the files already trashed are put back.
-    public static func trashGroup(_ group: PhotoGroup) throws -> [URL] {
+    public static func trashGroup(_ group: PhotoGroup, trashItem: TrashItem = moveToTrash) throws -> [URL] {
         let g = try completing(group)
         let fm = FileManager.default
         var done: [(original: URL, trashed: URL)] = []
         do {
             for url in g.allFiles {
-                var result: NSURL?
-                try fm.trashItem(at: url, resultingItemURL: &result)
-                done.append((url, (result as URL?) ?? url))
+                done.append((url, try trashItem(url)))
             }
         } catch {
             var stranded: [URL] = []

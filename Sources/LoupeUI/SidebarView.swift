@@ -34,6 +34,7 @@ struct SidebarView: View {
             Label(item.title, systemImage: item.systemImage)
                 .lineLimit(1)
                 .help(item.title)
+                .badge(item.badge ?? 0)  // 0 shows none
                 // The whole row, not just the label, takes drops and opens the context menu.
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .contentShape(Rectangle())

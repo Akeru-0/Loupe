@@ -15,10 +15,12 @@ public struct SidebarItem: Identifiable, Hashable, Sendable {
     public var scope: PhotoQuery.Scope
     public var children: [SidebarItem]
     public var dropTarget: DropTarget?
+    /// A count shown at the row's trailing edge (nil: none).
+    public var badge: Int?
 
     public init(
         id: String, title: String, systemImage: String, scope: PhotoQuery.Scope, children: [SidebarItem] = [],
-        dropTarget: DropTarget? = nil
+        dropTarget: DropTarget? = nil, badge: Int? = nil
     ) {
         self.id = id
         self.title = title
@@ -26,6 +28,7 @@ public struct SidebarItem: Identifiable, Hashable, Sendable {
         self.scope = scope
         self.children = children
         self.dropTarget = dropTarget
+        self.badge = badge
     }
 }
 

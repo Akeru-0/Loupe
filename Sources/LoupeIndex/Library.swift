@@ -115,6 +115,7 @@ public actor Library {
             var report = ScanReport()
             do { report = try await scanner.fullScan() } catch { logScanFailure(error) }
             logFailed(report)
+            scheduleDuplicateRefresh()
             await guardAgainstStaleRevert(photoIDs: report.sidecarChangedPhotoIDs)
             for id in ((try? index.allPhotos()) ?? []).compactMap(\.id) {
                 if Task.isCancelled { break }  // the app is replacing this library
@@ -126,6 +127,7 @@ public actor Library {
 
     public func stop() {
         isStopped = true
+        duplicateRefresh?.cancel()
         watcher?.stop()
         watcher = nil
         resumeStartWaiters()
@@ -390,21 +392,29 @@ public actor Library {
 
     /// Same as `trash`, also returning where the files ended up (tests clean these up).
     func trashReturningItems(_ ids: [Int64]) async -> (errors: [Int64: any Error], trashed: [URL]) {
-        await serialized {
-            var errors: [Int64: any Error] = [:]
-            var trashed: [URL] = []
-            var rescan: Set<String> = []
-            for id in ids {
-                do {
-                    let photo = try index.photo(id: id)
-                    trashed += try FileOperations.trashGroup(try index.groupFiles(ofPhoto: id, root: location.rootURL))
-                    if let photo { rescan.insert(photo.folderPath) }
-                } catch { errors[id] = error }
-            }
-            await rescanFolders(rescan)
-            return (errors, trashed)
-        }
+        await serialized { await trashLocked(ids) }
     }
+
+    private func trashLocked(_ ids: [Int64]) async -> (errors: [Int64: any Error], trashed: [URL]) {
+        var errors: [Int64: any Error] = [:]
+        var trashed: [URL] = []
+        var rescan: Set<String> = []
+        for id in ids {
+            do {
+                let photo = try index.photo(id: id)
+                trashed += try FileOperations.trashGroup(
+                    try index.groupFiles(ofPhoto: id, root: location.rootURL), trashItem: trashItem)
+                if let photo { rescan.insert(photo.folderPath) }
+            } catch { errors[id] = error }
+        }
+        await rescanFolders(rescan)
+        return (errors, trashed)
+    }
+
+    /// Where `trash` sends each file: the system Trash, a temp dir in tests.
+    private var trashItem: FileOperations.TrashItem = FileOperations.moveToTrash
+
+    func setTrashItem(_ trashItem: @escaping FileOperations.TrashItem) { self.trashItem = trashItem }
 
     /// Delete Album: the album's own photos move to the root (Unsorted) with all their files, then the folder is
     /// removed if nothing is left in it but `.DS_Store`. Subfolders (or other files) keep the folder in place.
@@ -525,6 +535,7 @@ public actor Library {
             let report = try await scanner.fullScan()
             logFailed(report)
             scanned = report.scannedPhotoIDs
+            scheduleDuplicateRefresh()
         } catch { logScanFailure(error) }
         let carry = inside.compactMap { photo in
             carried[photo.id].map { (state: $0, newKey: newNFC + photo.key.dropFirst(oldNFC.count)) }
@@ -579,13 +590,16 @@ public actor Library {
         _ folders: Set<String>, carrying carry: [(state: CarriedState, newKey: String)] = []
     ) async {
         var scanned: [Int64] = []
+        var changed = false
         for rel in folders.sorted() {
             do {
                 let report = try await scanner.rescan(folder: rel)
                 logFailed(report)
                 scanned += report.scannedPhotoIDs
+                changed = changed || report.added + report.updated + report.removed > 0
             } catch { logScanFailure(error) }
         }
+        if changed { scheduleDuplicateRefresh() }
         await restoreState(carry)
         await syncPhotosWithoutMirrorState(scanned)
     }
@@ -701,6 +715,102 @@ public actor Library {
         }
     }
 
+    // MARK: - Duplicates
+
+    /// Posted when the duplicate sets changed (not `didChange`: no file, folder or metadata changed).
+    public static let duplicatesDidChange = Notification.Name("LoupeLibraryDuplicatesDidChange")
+    /// Posted while the duplicate check hashes files; userInfo `done` and `total` (Int). Done when they are equal.
+    public static let duplicatesProgress = Notification.Name("LoupeLibraryDuplicatesProgress")
+
+    /// The latest duplicate refresh. A newer request cancels it and runs once it has wound down.
+    private var duplicateRefresh: Task<Void, Never>?
+
+    /// Refreshes `duplicate_member` in the background: after the initial scan and after scans that changed files.
+    /// Hashing (only new or changed files; the rest come from the cache) runs outside the serial section, like an
+    /// import's copying; only storing the result runs inside it. Cancelled by `stop()`.
+    private func scheduleDuplicateRefresh() {
+        guard !isStopped else { return }
+        let previous = duplicateRefresh
+        previous?.cancel()
+        duplicateRefresh = Task { [weak self] in
+            await previous?.value
+            await self?.refreshDuplicates()
+        }
+    }
+
+    private func refreshDuplicates() async {
+        guard !isStopped, !Task.isCancelled else { return }
+        let duplicates = DuplicateIndex(index: index, root: location.rootURL)
+        let rows: [DuplicateIndex.Row]
+        do {
+            // Not isolated to this actor: the hashing runs on the global executor.
+            rows = try await duplicates.compute { [weak self] done, total in
+                guard done == total || done % 50 == 0 else { return }
+                NotificationCenter.default.post(
+                    name: Library.duplicatesProgress, object: self, userInfo: ["done": done, "total": total])
+            }
+        } catch {
+            if !(error is CancellationError) { log("Could not check for duplicates: \(error.localizedDescription)") }
+            return
+        }
+        // `didChange` stays for files, folders and metadata; this posts `duplicatesDidChange` instead.
+        let changed: Bool = await serializedReporting {
+            guard !isStopped, !Task.isCancelled else { return (false, false) }  // a newer refresh replaces this one
+            do {
+                return (try duplicates.store(rows), false)
+            } catch {
+                log("Could not save the duplicates: \(error.localizedDescription)")
+                return (false, false)
+            }
+        }
+        if changed { NotificationCenter.default.post(name: Library.duplicatesDidChange, object: self) }
+    }
+
+    /// Returns once no duplicate refresh is running (tests).
+    func duplicateRefreshDone() async {
+        while let task = duplicateRefresh {
+            await task.value
+            if duplicateRefresh == task { return }
+        }
+    }
+
+    /// "Move Other Copies to Trash" in Duplicates. Each of `others` whose every media file has a byte-identical copy
+    /// in `kept` goes to the Trash through `trash` (whole group, all-or-nothing). This is checked again here against
+    /// the files as they are now (hashes cached while size and mtime are unchanged), so a duplicate list that is
+    /// out of date can never trash a file without a copy. The rest get `DuplicateError.notRedundant`, and `kept` is
+    /// never touched. Nothing is deleted permanently.
+    public func trashRedundantCopies(keeping kept: Int64, others: [Int64]) async -> [Int64: any Error] {
+        await serialized {
+            var errors: [Int64: any Error] = [:]
+            let keptHashes = currentHashes(ofPhoto: kept).map(Set.init)
+            var redundant: [Int64] = []
+            for id in Array(Set(others)).sorted() where id != kept {
+                if let keptHashes, let hashes = currentHashes(ofPhoto: id), hashes.allSatisfy(keptHashes.contains) {
+                    redundant.append(id)
+                } else {
+                    errors[id] = DuplicateError.notRedundant((try? index.photo(id: id))??.stem ?? "The photo")
+                }
+            }
+            let trashed = await trashLocked(redundant)
+            return errors.merging(trashed.errors) { a, _ in a }
+        }
+    }
+
+    /// The SHA-256 of each of the photo's media files as they are on disk now; nil if the photo has none or any of
+    /// them is missing or unreadable.
+    private func currentHashes(ofPhoto id: Int64) -> [String]? {
+        guard let versions = try? index.versions(ofPhoto: id), !versions.isEmpty else { return nil }
+        var hashes: [String] = []
+        for v in versions {
+            let url = v.url(in: location.rootURL)
+            guard FileHash.stamp(url)?.size == v.size,
+                let sha = (try? index.cachedSHA256(of: url, hasher: { try FileHash.sha256(of: $0) })) ?? nil
+            else { return nil }
+            hashes.append(sha)
+        }
+        return hashes
+    }
+
     // MARK: - Watcher input
 
     /// Watcher input no pass has taken yet: root-relative folders, and whether a full scan is due.
@@ -771,6 +881,7 @@ public actor Library {
             }
             for report in reports { logFailed(report) }
             var changed = reports.contains { $0.added + $0.updated + $0.removed > 0 }
+            if changed { scheduleDuplicateRefresh() }
             let scanned = Set(reports.flatMap(\.scannedPhotoIDs))
             let sidecarChanged = Set(reports.flatMap(\.sidecarChangedPhotoIDs))
 

@@ -139,6 +139,11 @@ extension LibraryIndex {
             clauses.append("p.folderPath = ''")
         case .mediaType(let type):
             clauses.append(mediaTypeSQL(type))
+        case .recentlyEdited(let days):
+            clauses.append("p.lastEditedAt >= ?")
+            args.append(now.addingTimeInterval(-Double(days) * 86400).timeIntervalSince1970)
+        case .duplicates:
+            clauses.append("EXISTS (SELECT 1 FROM duplicate_member d WHERE d.photoId = p.id)")
         case .folderTree(let path):
             let key = path.precomposedStringWithCanonicalMapping
             clauses.append("(p.folderPath = ? OR p.folderPath LIKE ? ESCAPE '\\')")
@@ -177,6 +182,7 @@ extension LibraryIndex {
         case .added: order = "p.addedDate \(dir)"
         case .name: order = "p.stem COLLATE NOCASE \(dir), p.folderPath \(dir)"
         case .rating: order = "p.rating \(dir)"
+        case .edited: order = "p.lastEditedAt IS NULL, p.lastEditedAt \(dir)"
         }
         let whereSQL = clauses.isEmpty ? "" : "WHERE " + clauses.joined(separator: " AND ")
         let sql = "SELECT p.id, p.captureDate FROM photo p \(whereSQL) ORDER BY \(order), p.id ASC"
