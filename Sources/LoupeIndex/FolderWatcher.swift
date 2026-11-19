@@ -1,10 +1,26 @@
 import CoreServices
 import Foundation
 
-/// Reports folders whose contents changed, via FSEvents. `rescanAll` is set when events were coalesced or
-/// dropped, the root changed, or a directory was created, removed or renamed.
+/// Reports folders whose contents changed, via FSEvents.
 public final class FolderWatcher: @unchecked Sendable {
-    public typealias Handler = @Sendable (_ folders: Set<URL>, _ rescanAll: Bool) -> Void
+    /// One batch of events.
+    public struct Changes: Equatable, Sendable {
+        /// Folders whose direct contents changed.
+        public var folders: Set<URL>
+        /// Directories that were created, removed or renamed, and paths FSEvents asks to rescan below
+        /// (`MustScanSubDirs`): the tree below them may have changed.
+        public var directories: Set<URL>
+        /// Events were dropped or the root changed: only a full scan is safe.
+        public var rescanAll: Bool
+
+        public init(folders: Set<URL> = [], directories: Set<URL> = [], rescanAll: Bool = false) {
+            self.folders = folders
+            self.directories = directories
+            self.rescanAll = rescanAll
+        }
+    }
+
+    public typealias Handler = @Sendable (_ changes: Changes) -> Void
 
     private let root: URL
     private let latency: TimeInterval
@@ -26,10 +42,12 @@ public final class FolderWatcher: @unchecked Sendable {
 
     deinit { stop() }
 
-    public func start() {
+    /// Returns false if FSEvents refused to create the stream (nothing is watched then).
+    @discardableResult
+    public func start() -> Bool {
         lock.lock()
         defer { lock.unlock() }
-        guard stream == nil else { return }
+        guard stream == nil else { return true }
         var context = FSEventStreamContext(
             version: 0, info: Unmanaged.passRetained(self).toOpaque(), retain: nil,
             release: { info in if let info { Unmanaged<FolderWatcher>.fromOpaque(info).release() } },
@@ -48,11 +66,16 @@ public final class FolderWatcher: @unchecked Sendable {
             latency, flags)
         else {
             Unmanaged<FolderWatcher>.fromOpaque(context.info!).release()
-            return
+            return false
         }
         FSEventStreamSetDispatchQueue(s, queue)
-        FSEventStreamStart(s)
+        guard FSEventStreamStart(s) else {
+            FSEventStreamInvalidate(s)
+            FSEventStreamRelease(s)  // releases the retained self
+            return false
+        }
         stream = s
+        return true
     }
 
     public func stop() {
@@ -66,19 +89,24 @@ public final class FolderWatcher: @unchecked Sendable {
     }
 
     private func handle(paths: [String], flags: [FSEventStreamEventFlags]) {
-        let scanAll = FSEventStreamEventFlags(
-            kFSEventStreamEventFlagMustScanSubDirs | kFSEventStreamEventFlagRootChanged
-                | kFSEventStreamEventFlagUserDropped | kFSEventStreamEventFlagKernelDropped)
+        onChange(Self.classify(paths: paths, flags: flags))
+    }
+
+    static func classify(paths: [String], flags: [FSEventStreamEventFlags]) -> Changes {
+        let dropped = FSEventStreamEventFlags(
+            kFSEventStreamEventFlagRootChanged | kFSEventStreamEventFlagUserDropped | kFSEventStreamEventFlagKernelDropped)
+        let mustScan = FSEventStreamEventFlags(kFSEventStreamEventFlagMustScanSubDirs)
         let dirChange = FSEventStreamEventFlags(
             kFSEventStreamEventFlagItemCreated | kFSEventStreamEventFlagItemRemoved | kFSEventStreamEventFlagItemRenamed)
         let isDir = FSEventStreamEventFlags(kFSEventStreamEventFlagItemIsDir)
-        var folders = Set<URL>()
-        var rescanAll = false
+        var changes = Changes()
         for (path, flag) in zip(paths, flags) {
-            if flag & scanAll != 0 || (flag & isDir != 0 && flag & dirChange != 0) { rescanAll = true }
             let trimmed = path.count > 1 && path.hasSuffix("/") ? String(path.dropLast()) : path
-            folders.insert(URL(fileURLWithPath: trimmed).deletingLastPathComponent())
+            let url = URL(fileURLWithPath: trimmed)
+            if flag & dropped != 0 { changes.rescanAll = true }
+            if flag & mustScan != 0 || (flag & isDir != 0 && flag & dirChange != 0) { changes.directories.insert(url) }
+            changes.folders.insert(url.deletingLastPathComponent())
         }
-        onChange(folders, rescanAll)
+        return changes
     }
 }

@@ -1,3 +1,4 @@
+import CoreServices
 import Foundation
 import Testing
 import GRDB
@@ -362,5 +363,87 @@ private struct Env {
         await e.library.handleFolderChanges([e.lib.url("a")], rescanAll: false)
         #expect(try e.library.index.photo(id: id)?.rating == 4)
         #expect(logs.restored.count == 1)
+    }
+}
+
+/// Notifications of one library (others run in parallel tests).
+private final class Notes: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _changes = 0
+    private var _albums = 0
+    private var tokens: [any NSObjectProtocol] = []
+    init(_ library: Library) {
+        let center = NotificationCenter.default
+        tokens.append(center.addObserver(forName: Library.didChange, object: library, queue: nil) { [self] _ in
+            lock.lock(); _changes += 1; lock.unlock()
+        })
+        tokens.append(center.addObserver(forName: Library.albumsDidChange, object: nil, queue: nil) { [self] _ in
+            lock.lock(); _albums += 1; lock.unlock()
+        })
+    }
+    deinit { for t in tokens { NotificationCenter.default.removeObserver(t) } }
+    var changes: Int { lock.lock(); defer { lock.unlock() }; return _changes }
+    var albums: Int { lock.lock(); defer { lock.unlock() }; return _albums }
+}
+
+/// Watcher input on a real ~/Pictures: Photos, LightCraft and Photo Booth libraries write constantly.
+@Suite struct WatcherChurnTests {
+    private func flags(_ f: Int) -> FSEventStreamEventFlags { FSEventStreamEventFlags(f) }
+
+    @Test func eventsInsideIgnoredFoldersCauseNoRescan() async throws {
+        let e = try Env()
+        try e.lib.addJPEG("a/IMG_1.jpg")
+        for dir in ["Test.photoslibrary/database", "LightCraft Library/cache", ".hidden/x"] {
+            try FileManager.default.createDirectory(at: e.lib.url(dir), withIntermediateDirectories: true)
+        }
+        _ = await e.library.initialSync()
+        try e.lib.addJPEG("new.jpg")  // only a rescan would find it
+        let notes = Notes(e.library)
+        let dirCreated = flags(kFSEventStreamEventFlagItemCreated | kFSEventStreamEventFlagItemIsDir)
+        let fileModified = flags(kFSEventStreamEventFlagItemModified | kFSEventStreamEventFlagItemIsFile)
+        var paths: [String] = []
+        var eventFlags: [FSEventStreamEventFlags] = []
+        for dir in ["Test.photoslibrary/database", "LightCraft Library/cache", ".hidden/x"] {
+            paths += [e.lib.url(dir + "/sub").path, e.lib.url(dir + "/file.db").path]
+            eventFlags += [dirCreated, fileModified]
+        }
+        let changes = FolderWatcher.classify(paths: paths, flags: eventFlags)
+        #expect(!changes.directories.isEmpty)  // the old code turned these into a full scan
+        await e.library.handleFolderChanges(changes)
+        #expect(try e.library.index.photo(key: "new") == nil)
+        #expect(await e.library.fullScans == 0)
+        #expect(notes.changes == 0)
+
+        // `.loupe` is hidden too, but album edits there still reach the sidebar.
+        await e.library.handleFolderChanges(
+            FolderWatcher.classify(paths: [e.lib.url(".loupe/albums.json").path], flags: [fileModified]))
+        #expect(notes.albums >= 1)
+        #expect(try e.library.index.photo(key: "new") == nil)
+    }
+
+    @Test func rapidFullScanRequestsCoalesce() async throws {
+        let e = try Env()
+        for i in 1...5 { try e.lib.addJPEG("a/IMG_\(i).jpg") }
+        _ = await e.library.initialSync()
+        await withTaskGroup(of: Void.self) { group in
+            for _ in 0..<10 {
+                group.addTask { await e.library.handleFolderChanges(FolderWatcher.Changes(rescanAll: true)) }
+            }
+        }
+        let scans = await e.library.fullScans
+        #expect(scans >= 1 && scans <= 2)
+    }
+
+    @Test func unchangedRescanPostsNoDidChange() async throws {
+        let e = try Env()
+        try e.lib.addJPEG("a/IMG_1.jpg")
+        _ = await e.library.initialSync()
+        let notes = Notes(e.library)
+        await e.library.handleFolderChanges([e.lib.url("a")], rescanAll: false)
+        await e.library.handleFolderChanges([e.lib.root], rescanAll: true)
+        #expect(notes.changes == 0)
+        try e.lib.addJPEG("a/IMG_2.jpg")
+        await e.library.handleFolderChanges([e.lib.url("a")], rescanAll: false)
+        #expect(notes.changes == 1)
     }
 }

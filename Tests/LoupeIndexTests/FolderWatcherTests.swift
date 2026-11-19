@@ -19,7 +19,7 @@ private final class Collector: @unchecked Sendable {
         let lib = try TestLibrary()
         try FileManager.default.createDirectory(at: lib.url("sub"), withIntermediateDirectories: true)
         let collector = Collector()
-        let watcher = FolderWatcher(root: lib.root, latency: 0.1) { collector.add($0, $1) }
+        let watcher = FolderWatcher(root: lib.root, latency: 0.1) { collector.add($0.folders, $0.rescanAll || !$0.directories.isEmpty) }
         watcher.start()
         defer { watcher.stop() }
         try await Task.sleep(for: .milliseconds(500))
@@ -41,7 +41,7 @@ extension FolderWatcherTests {
         try lib.addJPEG("sub/early.jpg")
         try await Task.sleep(for: .milliseconds(500))
         let collector = Collector()
-        let watcher = FolderWatcher(root: lib.root, latency: 0.1, sinceWhen: since) { collector.add($0, $1) }
+        let watcher = FolderWatcher(root: lib.root, latency: 0.1, sinceWhen: since) { collector.add($0.folders, $0.rescanAll || !$0.directories.isEmpty) }
         watcher.start()
         defer { watcher.stop() }
         let deadline = Date().addingTimeInterval(5)

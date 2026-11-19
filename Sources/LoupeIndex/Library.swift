@@ -48,14 +48,19 @@ public actor Library {
     // MARK: - Serial section
 
     private func serialized<T>(_ body: () async -> T) async -> T {
+        await serializedReporting { (await body(), true) }
+    }
+
+    /// `body` also says whether anything changed; `didChange` is posted only then.
+    private func serializedReporting<T>(_ body: () async -> (T, changed: Bool)) async -> T {
         if busy {
             await withCheckedContinuation { waiters.append($0) }
         } else {
             busy = true
         }
-        let result = await body()
+        let (result, changed) = await body()
         if waiters.isEmpty { busy = false } else { waiters.removeFirst().resume() }
-        NotificationCenter.default.post(name: Library.didChange, object: nil)
+        if changed { NotificationCenter.default.post(name: Library.didChange, object: self) }
         return result
     }
 
@@ -70,11 +75,13 @@ public actor Library {
         guard watcher == nil else { return await initialSync() }
         // Events during the initial sync are replayed once; they queue behind it in the serial section.
         let since = FSEventsGetCurrentEventId()
-        let w = FolderWatcher(root: location.rootURL, sinceWhen: since) { [weak self] folders, all in
+        let w = FolderWatcher(root: location.rootURL, sinceWhen: since) { [weak self] changes in
             guard let self else { return }
-            Task { await self.handleFolderChanges(folders, rescanAll: all) }
+            Task { await self.handleFolderChanges(changes) }
         }
-        w.start()
+        if !w.start() {
+            log("Could not watch \(location.rootURL.path) for changes; changes made outside Loupe show up after a restart")
+        }
         watcher = w
         return await initialSync()
     }
@@ -172,8 +179,12 @@ public actor Library {
     /// For photos whose sidecar changed on disk behind Loupe's back. LightCraft (also when merging into a sidecar
     /// Loupe created) gets its stale reverts restored; for any other writer disk wins and entries that no longer
     /// match are dropped.
-    private func guardAgainstStaleRevert(photoIDs: [Int64]) async {
-        for id in photoIDs { await guardOne(photoID: id) }
+    /// Returns true if a value was restored.
+    @discardableResult
+    private func guardAgainstStaleRevert(photoIDs: [Int64]) async -> Bool {
+        var restored = false
+        for id in photoIDs where await guardOne(photoID: id) { restored = true }
+        return restored
     }
 
     private func guardIfSidecarChangedSinceStamp(photoID id: Int64) async {
@@ -185,18 +196,21 @@ public actor Library {
         await guardOne(photoID: id)
     }
 
-    private func guardOne(photoID id: Int64) async {
+    @discardableResult
+    private func guardOne(photoID id: Int64) async -> Bool {
+        var restored = false
         do {
             let pending = try await index.dbPool.read { try Self.pendingEntries($0, photoID: id) }
-            guard !pending.isEmpty else { return }
+            guard !pending.isEmpty else { return false }
             let group = try index.groupFiles(ofPhoto: id, root: location.rootURL)
-            guard let sidecar = group.sidecar else { return }
+            guard let sidecar = group.sidecar else { return false }
             let doc = try XMPDocument(data: Data(contentsOf: sidecar))
             let resolved: [StaleRevertGuard.Pending]
             if StaleRevertGuard.isLightCraft(doc) {
                 let result = StaleRevertGuard.evaluate(pending, current: doc.metadata)
                 if !result.corrections.isEmpty {
                     try await applyOne(result.corrections, to: id, track: false)
+                    restored = true
                     for change in result.corrections { log("Restored \(Self.fieldName(change)) after LightCraft overwrote it") }
                 }
                 resolved = result.resolved
@@ -213,6 +227,7 @@ public actor Library {
         } catch {
             log("Stale-revert check failed for photo \(id): \(error)")
         }
+        return restored
     }
 
     private static func fieldName(_ change: MetadataChange) -> String {
@@ -645,53 +660,94 @@ public actor Library {
 
     // MARK: - Watcher input
 
-    public func handleFolderChanges(_ folders: Set<URL>, rescanAll: Bool) async {
-        guard !isStopped else { return }
-        await serialized {
-            guard !isStopped else { return }  // stopped while waiting for the serial section
-            let root = Self.realURL(location.rootURL)
-            var relFolders = Set<String>()
-            for url in folders {
-                guard let rel = Self.relativeFolder(Self.realURL(url), root: root) else { continue }
-                if rel == ".loupe" || rel.hasPrefix(".loupe/") {
-                    NotificationCenter.default.post(name: Library.albumsDidChange, object: nil)
-                } else {
-                    relFolders.insert(rel)
-                }
-            }
+    /// Watcher input no pass has taken yet: root-relative folders, and whether a full scan is due.
+    private var pendingFolders = Set<String>()
+    private var pendingRescanAll = false
+    /// The pass that will take the pending input. At most one waits while another runs.
+    private var queuedPass: Task<Void, Never>?
+    /// Full scans run for watcher input (tests).
+    private(set) var fullScans = 0
 
-            var scanned = Set<Int64>()
-            var sidecarChanged = Set<Int64>()
-            var unscannedInFolders = Set<Int64>()
+    /// `rescanAll`: a full scan whatever `folders` says (as for dropped events).
+    public func handleFolderChanges(_ folders: Set<URL>, rescanAll: Bool) async {
+        await handleFolderChanges(FolderWatcher.Changes(folders: folders, rescanAll: rescanAll))
+    }
+
+    /// Events inside folders the scanner never enters (hidden ones, packages such as a Photos library, excluded
+    /// names such as LightCraft Library) are dropped first, as those libraries write all the time; `.loupe` only
+    /// tells the sidebar that albums changed. The rest merges into the one pending pass, so a burst costs at most
+    /// the pass running now plus one more. Returns once a pass has handled this input.
+    public func handleFolderChanges(_ changes: FolderWatcher.Changes) async {
+        guard !isStopped else { return }
+        let root = Self.realURL(location.rootURL)
+        var albumsChanged = false
+        var folders = Set<String>()
+        var directoryChanged = false
+        for (url, isDirectoryChange) in changes.folders.map({ ($0, false) }) + changes.directories.map({ ($0, true) }) {
+            guard let rel = Self.relativeFolder(Self.realURL(url), root: root) else { continue }
+            if rel == ".loupe" || rel.hasPrefix(".loupe/") {
+                albumsChanged = true
+                continue
+            }
+            if scanner.isIgnored(rel.split(separator: "/").map(String.init), under: root) { continue }
+            if isDirectoryChange { directoryChanged = true } else { folders.insert(rel) }
+        }
+        if albumsChanged { NotificationCenter.default.post(name: Library.albumsDidChange, object: nil) }
+        let rescanAll = changes.rescanAll || directoryChanged
+        guard rescanAll || !folders.isEmpty else { return }
+
+        pendingFolders.formUnion(folders)
+        pendingRescanAll = pendingRescanAll || rescanAll
+        let pass: Task<Void, Never>
+        if let queuedPass {
+            pass = queuedPass
+        } else {
+            pass = Task { await self.runPendingPass() }
+            queuedPass = pass
+        }
+        await pass.value
+    }
+
+    /// Scans what the watcher reported, then syncs the stores. Posts `didChange` only if something changed.
+    private func runPendingPass() async {
+        await serializedReporting {
+            queuedPass = nil  // input from now on waits for the next pass
+            let folders = pendingFolders, rescanAll = pendingRescanAll
+            pendingFolders = []
+            pendingRescanAll = false
+            guard !isStopped else { return ((), false) }  // stopped while waiting for the serial section
+
+            var reports: [ScanReport] = []
             if rescanAll {
-                do {
-                    let report = try await scanner.fullScan()
-                    logFailed(report)
-                    scanned.formUnion(report.scannedPhotoIDs)
-                    sidecarChanged.formUnion(report.sidecarChangedPhotoIDs)
-                } catch { logScanFailure(error) }
+                fullScans += 1
+                do { reports.append(try await scanner.fullScan()) } catch { logScanFailure(error) }
             } else {
-                for rel in relFolders.sorted() {
-                    do {
-                        let report = try await scanner.rescan(folder: rel)
-                        logFailed(report)
-                        scanned.formUnion(report.scannedPhotoIDs)
-                        sidecarChanged.formUnion(report.sidecarChangedPhotoIDs)
-                    } catch { logScanFailure(error) }
-                    // Store-side edits (e.g. Finder tags) do not change the files the scanner compares.
-                    let key = rel.precomposedStringWithCanonicalMapping
-                    let ids = (try? await index.dbPool.read { db in
-                        try Int64.fetchAll(db, sql: "SELECT id FROM photo WHERE locationId = ? AND folderPath = ?",
-                                           arguments: [location.id, key])
-                    }) ?? []
-                    unscannedInFolders.formUnion(ids)
+                for rel in folders.sorted() {
+                    do { reports.append(try await scanner.rescan(folder: rel)) } catch { logScanFailure(error) }
                 }
             }
-            await guardAgainstStaleRevert(photoIDs: sidecarChanged.sorted())
-            for id in scanned.sorted() { await syncStores(photoID: id, pushIfUnchanged: true) }
-            for id in unscannedInFolders.subtracting(scanned).sorted() {
-                await syncStores(photoID: id, pushIfUnchanged: false)
+            for report in reports { logFailed(report) }
+            var changed = reports.contains { $0.added + $0.updated + $0.removed > 0 }
+            let scanned = Set(reports.flatMap(\.scannedPhotoIDs))
+            let sidecarChanged = Set(reports.flatMap(\.sidecarChangedPhotoIDs))
+
+            // Store-side edits (e.g. Finder tags) do not change the files the scanner compares.
+            var unscannedInFolders = Set<Int64>()
+            for rel in folders {
+                let key = rel.precomposedStringWithCanonicalMapping
+                let ids = (try? await index.dbPool.read { db in
+                    try Int64.fetchAll(db, sql: "SELECT id FROM photo WHERE locationId = ? AND folderPath = ?",
+                                       arguments: [location.id, key])
+                }) ?? []
+                unscannedInFolders.formUnion(ids)
             }
+            if await guardAgainstStaleRevert(photoIDs: sidecarChanged.sorted()) { changed = true }
+            for id in scanned.sorted() where await syncStores(photoID: id, pushIfUnchanged: true) { changed = true }
+            for id in unscannedInFolders.subtracting(scanned).sorted()
+            where await syncStores(photoID: id, pushIfUnchanged: false) {
+                changed = true
+            }
+            return ((), changed)
         }
     }
 
