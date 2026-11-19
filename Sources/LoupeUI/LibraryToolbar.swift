@@ -24,7 +24,7 @@ struct LibraryToolbar: ToolbarContent {
                 Image(systemName: "plus.magnifyingglass")
             }
             .labelsHidden()
-            .frame(width: 140)
+            .frame(width: 200)
             .help("Zoom")
         }
         ToolbarItem { filterMenu }
@@ -93,3 +93,4 @@ struct LibraryToolbar: ToolbarContent {
         .help("Sort")
     }
 }
+
