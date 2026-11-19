@@ -471,6 +471,7 @@ struct PhotoViewer: View {
         .background(ViewerKeyCatcher(viewer: viewer))
         .onAppear { viewer.start() }
         .onChange(of: model.viewerPhotoID) { _, id in viewer.show(id) }
+        .onChange(of: model.slideshow == nil) { _, ended in if !ended { viewer.player?.pause() } }  // no sound behind it
         .onDisappear { viewer.stop() }
     }
 }

@@ -161,15 +161,6 @@ extension AppModel {
         }
     }
 
-    /// Play. Task 26 replaces this with the slideshow; for now it opens the viewer on the first target, or on the
-    /// view's first photo when nothing is selected.
-    func startSlideshow() {
-        guard actionBarState.canPlay,
-            let id = actionTargetIDs.first ?? photoSections.lazy.flatMap(\.photoIDs).first
-        else { return }
-        viewerPhotoID = id
-    }
-
     private func presentActionErrors(_ errors: [Int64: any Error], _ title: String, library: Library) async {
         guard !errors.isEmpty else { return }
         let index = library.index, ids = Array(errors.keys)

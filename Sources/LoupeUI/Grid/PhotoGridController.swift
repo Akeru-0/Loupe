@@ -109,6 +109,7 @@ import Observation
             _ = model.columns
             _ = model.selection
             _ = model.viewerPhotoID
+            _ = model.slideshow  // its end hands the last shown photo over like the viewer's
         } onChange: { [weak self] in
             // Called before the change is stored; read the new values on the next main-actor turn.
             Task { @MainActor in

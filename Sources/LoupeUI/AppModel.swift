@@ -82,6 +82,8 @@ public struct SidebarGroup: Identifiable, Sendable {
     public var tagEditorPhotoIDs: [Int64]?
     /// Favorite and display kind of photos the action bar targeted, as last loaded (`reloadActionBar()`).
     var actionFlags: [Int64: ActionFlags] = [:]
+    /// The running slideshow (Play), in its own window over the screen.
+    private(set) var slideshow: SlideshowController?
 
     public private(set) var sidebar: [SidebarGroup] = []
     public private(set) var photoSections: [PhotoSection] = []
@@ -108,7 +110,8 @@ public struct SidebarGroup: Identifiable, Sendable {
     @ObservationIgnored private var sidebarTask: Task<Void, Never>?
     @ObservationIgnored private var sidebarRefreshPending = false
     @ObservationIgnored private var observers: [any NSObjectProtocol] = []
-    /// Set by `closeViewer()`, taken once by the grid; any other change of `viewerPhotoID` clears it.
+    /// Set by `closeViewer()` (and the slideshow ending), taken once by the grid; any other change of `viewerPhotoID`
+    /// clears it.
     @ObservationIgnored private var closedViewerPhotoID: Int64?
     @ObservationIgnored private var cardDetector: CardDetector?
     @ObservationIgnored var actionBarTask: Task<Void, Never>?
@@ -208,6 +211,7 @@ public struct SidebarGroup: Identifiable, Sendable {
         queryTask?.cancel()
         library = nil
         photoSections = []
+        slideshow?.end(handoff: false)
         viewerPhotoID = nil
         reloadActionBar()  // drops the old library's records
         isScanning = true
@@ -282,6 +286,29 @@ public struct SidebarGroup: Identifiable, Sendable {
         guard let id = viewerPhotoID else { return }
         viewerPhotoID = nil
         closedViewerPhotoID = id
+    }
+
+    /// Play: a full-screen slideshow of the targets if two or more are selected, otherwise of the whole query,
+    /// starting at the selected or viewed photo (`SlideshowModel`).
+    func startSlideshow() {
+        guard slideshow == nil, actionBarState.canPlay, let library,
+            let show = SlideshowModel(targets: actionTargetIDs, order: photoSections.flatMap(\.photoIDs))
+        else { return }
+        let controller = SlideshowController(app: self, library: library, show: show)
+        slideshow = controller
+        controller.start(over: NSApp.keyWindow ?? NSApp.mainWindow)
+    }
+
+    /// The slideshow ended on `id` (nil: it was reset, e.g. the library was replaced). An open viewer shows that
+    /// photo; otherwise the grid selects it and scrolls it into view, as when the viewer closes on it.
+    func slideshowEnded(on id: Int64?) {
+        slideshow = nil
+        guard let id else { return }
+        if viewerPhotoID != nil {
+            viewerPhotoID = id
+        } else {
+            closedViewerPhotoID = id  // the grid takes it when it sees `slideshow` change
+        }
     }
 
     /// The photo the viewer closed on, once.
