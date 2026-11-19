@@ -44,21 +44,25 @@ struct ImportEngine: Sendable {
     var list: @Sendable (Card) throws -> [PhotoGroup]
     var check: @Sendable ([PhotoGroup], @escaping @Sendable (Int, Int) -> Void) async throws -> DuplicateReport
     var run: @Sendable (ImportPlan, @escaping @Sendable (ImportProgress) -> Void) async throws -> ImportResult
+    /// Returns once the library's initial scan has finished: until then its index does not know every file.
+    var waitForLibrary: @Sendable () async -> Void = {}
 
     /// The real engine for `library`. Duplicates are looked for in the library and, if there is one, in
-    /// `<root>/Photos Library.photoslibrary`.
+    /// `<root>/Photos Library.photoslibrary`, once the library's initial scan has indexed it.
     static func live(_ library: Library) -> ImportEngine {
         let root = library.location.rootURL, index = library.index, markers = library.settings.editMarkers
         return ImportEngine(
             list: { try CardListing.groups(on: $0, editMarkers: markers) },
             check: { groups, progress in
+                await library.waitUntilStarted()
                 let photos = root.appendingPathComponent("Photos Library.photoslibrary", isDirectory: true)
                 let finder = DuplicateFinder(
                     index: index, root: root,
                     photosLibrary: FileManager.default.fileExists(atPath: photos.path) ? photos : nil)
                 return try await finder.present(groups, progress: progress)
             },
-            run: { plan, progress in try await library.importFiles(plan, progress: progress) })
+            run: { plan, progress in try await library.importFiles(plan, progress: progress) },
+            waitForLibrary: { await library.waitUntilStarted() })
     }
 }
 
@@ -72,6 +76,8 @@ extension PhotoGroup {
 @MainActor @Observable final class ImportModel {
     enum Phase {
         case listing
+        /// The library is still running its first scan; the duplicate check waits for it.
+        case waitingForLibrary
         case checking(done: Int, total: Int)
         case ready
         case importing(ImportProgress)
@@ -80,10 +86,11 @@ extension PhotoGroup {
 
         var isReady: Bool { if case .ready = self { true } else { false } }
         var isImporting: Bool { if case .importing = self { true } else { false } }
+        var isWaitingForLibrary: Bool { if case .waitingForLibrary = self { true } else { false } }
         /// Listing, checking or importing.
         var isBusy: Bool {
             switch self {
-            case .listing, .checking, .importing: true
+            case .listing, .waitingForLibrary, .checking, .importing: true
             case .ready, .done, .failed: false
             }
         }
@@ -166,6 +173,9 @@ extension PhotoGroup {
                 return
             }
             self.groups = groups
+            phase = .waitingForLibrary
+            await engine.waitForLibrary()
+            guard !Task.isCancelled else { return }
             phase = .checking(done: 0, total: groups.reduce(0) { $0 + $1.versions.count })
             // Holds the model until the check ends; cancelling the load cancels the check.
             let check = Task.detached(priority: .userInitiated) {

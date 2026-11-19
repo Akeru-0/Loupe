@@ -2,6 +2,8 @@ import Foundation
 import LoupeCore
 import LoupeFeatures
 import LoupeImport
+import LoupeIndex
+import LoupeTestSupport
 import Testing
 @testable import LoupeUI
 
@@ -132,6 +134,89 @@ private func engine(_ groups: [PhotoGroup], present: [PhotoGroup] = [], plans: P
         guard case .failed = model.phase else { Issue.record("not failed: \(model.phase)"); return }
         #expect(errors.errors.count == 1)
         #expect(model.importAllNew() == nil)
+    }
+}
+
+/// A gate the test opens; `wait()` returns once it is open.
+private final class Gate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var open = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+    var isOpen: Bool { lock.lock(); defer { lock.unlock() }; return open }
+    func wait() async {
+        await withCheckedContinuation { c in
+            lock.lock()
+            if open { lock.unlock(); c.resume() } else { waiters.append(c); lock.unlock() }
+        }
+    }
+    func openGate() {
+        lock.lock(); open = true; let w = waiters; waiters = []; lock.unlock()
+        for c in w { c.resume() }
+    }
+}
+
+/// The import check must not run against a library whose first scan has not indexed it yet: everything would
+/// look new and Import All New would copy duplicates (always so on first launch).
+@MainActor @Suite struct ImportWaitsForLibraryTests {
+    @Test func modelWaitsForTheLibraryBeforeChecking() async throws {
+        let gate = Gate()
+        let checked = Gate()
+        let groups = [group("IMG_1")]
+        let model = ImportModel(
+            card: card,
+            engine: ImportEngine(
+                list: { _ in groups },
+                check: { _, _ in
+                    checked.openGate()
+                    return DuplicateReport(presentFiles: [], photosLibraryChecked: true)
+                },
+                run: { _, _ in ImportResult() },
+                waitForLibrary: { await gate.wait() }),
+            preferences: Preferences())
+        let load = model.load()
+        let deadline = Date().addingTimeInterval(5)
+        while !model.phase.isWaitingForLibrary && Date() < deadline { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(model.phase.isWaitingForLibrary)
+        #expect(!model.canImport)
+        #expect(model.importAllNew() == nil)
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(!checked.isOpen)
+        gate.openGate()
+        await load.value
+        #expect(checked.isOpen)
+        #expect(model.phase.isReady)
+    }
+
+    @Test func liveCheckWaitsForTheInitialScan() async throws {
+        let lib = try TestLibrary()
+        let cardDir = try TestLibrary()
+        try lib.addJPEG("2026/Trip/IMG_1.JPG")
+        try FileManager.default.createDirectory(at: cardDir.url("DCIM/100CANON"), withIntermediateDirectories: true)
+        try FileManager.default.copyItem(at: lib.url("2026/Trip/IMG_1.JPG"), to: cardDir.url("DCIM/100CANON/IMG_1.JPG"))
+        try cardDir.addJPEG("DCIM/100CANON/IMG_2.JPG", width: 64)
+        let card = Card(volumeURL: cardDir.root, name: "CARD", dcimURL: cardDir.url("DCIM"))
+        let support = FileManager.default.temporaryDirectory.appendingPathComponent("loupe-support-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: support) }
+        let library = try Library(
+            location: LocalFolderLocation(rootURL: lib.root), settings: LibrarySettings(rootPath: lib.root.path),
+            registry: FeatureRegistry(), supportDirectory: support, cacheDirectory: support.appendingPathComponent("cache"))
+        let engine = ImportEngine.live(library)
+        let groups = try engine.list(card)
+        #expect(groups.map(\.stem) == ["IMG_1", "IMG_2"])
+
+        let done = Gate()
+        let check = Task.detached {
+            let report = try await engine.check(groups) { _, _ in }
+            done.openGate()
+            return report
+        }
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(!done.isOpen)  // the library has not been started yet
+        _ = await library.start()
+        let report = try await check.value
+        await library.stop()
+        #expect(report.isOnMac(groups[0]))  // indexed by the initial scan
+        #expect(!report.isOnMac(groups[1]))
     }
 }
 

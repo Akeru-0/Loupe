@@ -57,6 +57,8 @@ struct ImportView: View {
         switch importModel.phase {
         case .listing:
             return "Reading the card…"
+        case .waitingForLibrary:
+            return "Waiting for library scan…"
         case .checking(let done, let total):
             return "Looking for photos already on this Mac… \(done.formatted()) of \(total.formatted())"
         case .failed:

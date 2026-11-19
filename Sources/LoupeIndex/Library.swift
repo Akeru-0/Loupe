@@ -26,6 +26,9 @@ public actor Library {
     private var isStopped = false
     /// Held by the one import running on this library (`beginImport`/`endImport`).
     private var isImporting = false
+    /// Set once `start()`'s initial scan and store sync are done; `waitUntilStarted()` callers wait for it.
+    private var hasStarted = false
+    private var startWaiters: [CheckedContinuation<Void, Never>] = []
 
     // Actor reentrancy: every await inside scan/apply work could let another call in, so they queue here.
     private var busy = false
@@ -72,6 +75,26 @@ public actor Library {
 
     /// Scans, syncs the metadata stores, then starts watching the root.
     public func start() async -> ScanReport {
+        let report = await startWatchingAndSync()
+        hasStarted = true
+        resumeStartWaiters()
+        return report
+    }
+
+    /// Returns once `start()` has finished its initial scan and store sync (at once if it has), or the library
+    /// was stopped. Until then the index may not list files that are on disk.
+    public func waitUntilStarted() async {
+        guard !hasStarted, !isStopped else { return }
+        await withCheckedContinuation { startWaiters.append($0) }
+    }
+
+    private func resumeStartWaiters() {
+        let waiting = startWaiters
+        startWaiters = []
+        for c in waiting { c.resume() }
+    }
+
+    private func startWatchingAndSync() async -> ScanReport {
         guard watcher == nil else { return await initialSync() }
         // Events during the initial sync are replayed once; they queue behind it in the serial section.
         let since = FSEventsGetCurrentEventId()
@@ -105,6 +128,7 @@ public actor Library {
         isStopped = true
         watcher?.stop()
         watcher = nil
+        resumeStartWaiters()
     }
 
     // MARK: - Metadata edits
