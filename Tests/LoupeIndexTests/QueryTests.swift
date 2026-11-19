@@ -59,6 +59,39 @@ private func utc() -> (Calendar, Locale) {
         _ = old
     }
 
+    @Test func mediaTypeScopesSelectTheRightPhotos() throws {
+        let i = try makeIndex()
+        func photo(_ stem: String, raw: Bool = false, live: Bool = false, _ versions: [(VersionKind, Int?, Int?, Bool)]) throws -> Int64 {
+            let id = try insert(i, "", stem, raw: raw, video: live || versions.contains { $0.0 == .video })
+            try i.dbPool.write { db in
+                for (n, v) in versions.enumerated() {
+                    var r = VersionRecord(photoId: id, path: "\(stem)\(n)", kind: v.0, size: 1, modified: Date(),
+                                          pixelWidth: v.1, pixelHeight: v.2, isDisplay: v.3)
+                    try r.insert(db)
+                }
+            }
+            return id
+        }
+        let pano = try photo("pano", [(.jpeg, 3000, 1000, true)])
+        let tallPano = try photo("tallpano", [(.jpeg, 1000, 2000, true)])
+        let portrait = try photo("portrait", [(.jpeg, 400, 600, true)])
+        let video = try photo("video", [(.video, 3000, 1000, true)])
+        let raw = try photo("rawpair", raw: true, [(.raw, 3000, 1000, false), (.jpeg, 400, 300, true)])
+        let live = try photo("live", live: true, [(.jpeg, 400, 300, true), (.video, 400, 300, false)])
+        _ = (portrait, live)
+        func run(_ t: MediaType) throws -> Set<Int64> { Set(try ids(i, PhotoQuery(scope: .mediaType(t)))) }
+        #expect(try run(.videos) == [video])
+        #expect(try run(.panoramas) == [pano, tallPano])
+        #expect(try run(.raw) == [raw])
+        #expect(try i.hasMedia(.videos) && i.hasMedia(.panoramas) && i.hasMedia(.raw))
+    }
+
+    @Test func hasMediaIsFalseForEmptyLibrary() throws {
+        let i = try makeIndex()
+        _ = try insert(i, "", "plain")
+        #expect(try !i.hasMedia(.videos) && !i.hasMedia(.panoramas) && !i.hasMedia(.raw))
+    }
+
     @Test func unsortedScopeIsRootOnly() throws {
         let i = try makeIndex()
         let root = try insert(i, "", "r")

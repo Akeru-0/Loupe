@@ -20,6 +20,24 @@ struct LibrarySidebarSection: SidebarSection {
     }
 }
 
+/// Videos, Panoramas and RAW: smart filters, listed only for types the library has.
+struct MediaTypesSidebarSection: SidebarSection {
+    let id = "mediaTypes"
+    let title: String? = "Media Types"
+    let order = 50
+
+    func items(index: LibraryIndex, root: URL, settings: LibrarySettings) throws -> [SidebarItem] {
+        let all: [(MediaType, String, String, String)] = [
+            (.videos, "videos", "Videos", "video"),
+            (.panoramas, "panoramas", "Panoramas", "pano"),
+            (.raw, "raw", "RAW", "camera.aperture"),
+        ]
+        return try all.filter { try index.hasMedia($0.0) }.map {
+            SidebarItem(id: "media:\($0.1)", title: $0.2, systemImage: $0.3, scope: .mediaType($0.0))
+        }
+    }
+}
+
 /// Albums are folders: the real folder tree under the root. Albums take dropped photos; groups (folders with only
 /// subfolders) show everything below them and take no drops. Keyword albums are not shown.
 struct AlbumsSidebarSection: SidebarSection {

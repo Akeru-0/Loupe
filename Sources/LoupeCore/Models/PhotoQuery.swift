@@ -1,5 +1,10 @@
 import Foundation
 
+/// A smart filter over the media itself, listed in the sidebar's Media Types section.
+public enum MediaType: Hashable, Sendable, CaseIterable {
+    case videos, panoramas, raw
+}
+
 /// What the grid shows: a scope, filters, a sort and a date grouping. Pure value; the index turns it into SQL.
 public struct PhotoQuery: Hashable, Sendable {
     public enum Scope: Hashable, Sendable {
@@ -14,6 +19,7 @@ public struct PhotoQuery: Hashable, Sendable {
         case unsorted
         /// Recursive: photos in this folder and in every folder below it (a group).
         case folderTree(String)
+        case mediaType(MediaType)
     }
     public enum KindFilter: Hashable, Sendable { case any, hasRaw, withoutRaw, videos, lightCraftEdited }
     public enum SortField: Hashable, Sendable { case captureDate, added, name, rating }

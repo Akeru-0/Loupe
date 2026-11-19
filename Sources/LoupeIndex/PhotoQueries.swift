@@ -93,6 +93,29 @@ extension LibraryIndex {
             .replacingOccurrences(of: "_", with: "\\_")
     }
 
+    /// WHERE condition on `p` for a media type. Videos and panoramas read the display version (Live Photos have a
+    /// video version but their display version is an image); version pixel sizes are orientation-corrected.
+    static func mediaTypeSQL(_ type: MediaType) -> String {
+        switch type {
+        case .raw: return "p.hasRaw = 1"
+        case .videos:
+            return "EXISTS (SELECT 1 FROM version v WHERE v.photoId = p.id AND v.isDisplay = 1 AND v.kind = 'video')"
+        case .panoramas:
+            return """
+                EXISTS (SELECT 1 FROM version v WHERE v.photoId = p.id AND v.isDisplay = 1 AND v.kind != 'video' \
+                AND v.pixelWidth > 0 AND v.pixelHeight > 0 \
+                AND (v.pixelWidth >= 2 * v.pixelHeight OR v.pixelHeight >= 2 * v.pixelWidth))
+                """
+        }
+    }
+
+    /// Whether any photo matches the media type (cheap: stops at the first).
+    public func hasMedia(_ type: MediaType) throws -> Bool {
+        try dbPool.read {
+            try Bool.fetchOne($0, sql: "SELECT EXISTS (SELECT 1 FROM photo p WHERE \(Self.mediaTypeSQL(type)))") ?? false
+        }
+    }
+
     static func fetchRows(db: Database, query q: PhotoQuery, now: Date) throws -> [Row] {
         var clauses: [String] = []
         var args: [any DatabaseValueConvertible] = []
@@ -114,6 +137,8 @@ extension LibraryIndex {
             args.append(path.precomposedStringWithCanonicalMapping)
         case .unsorted:
             clauses.append("p.folderPath = ''")
+        case .mediaType(let type):
+            clauses.append(mediaTypeSQL(type))
         case .folderTree(let path):
             let key = path.precomposedStringWithCanonicalMapping
             clauses.append("(p.folderPath = ? OR p.folderPath LIKE ? ESCAPE '\\')")
