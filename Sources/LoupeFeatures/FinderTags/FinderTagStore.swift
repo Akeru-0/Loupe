@@ -9,7 +9,8 @@ import LoupeCore
 ///   the stored state is the pushed set, and comparisons use `key(_:)`.
 /// - Push replaces tags Loupe previously mirrored (in `lastState`) and any `★*` tag, but keeps
 ///   other Finder tags already on a file (user-added, not yet pulled) so they are never deleted.
-/// - `★*` tags are one-way (Loupe → Finder); they never flow back. Albums are not mirrored.
+/// - `★*` tags are one-way (Loupe → Finder); they never flow back. Albums are not mirrored, and Finder tags
+///   containing `|` (keyword paths) are never pulled.
 public struct FinderTagStore: MetadataStore {
     public let id = "finder-tags"
     public init() {}
@@ -26,6 +27,8 @@ public struct FinderTagStore: MetadataStore {
         return chars.count == 2 && String(chars[0]) == star && ("1"..."5").contains(chars[1])
     }
     private static func isAlbum(_ s: String) -> Bool { s.hasPrefix(Keywords.albumPrefix) }
+    /// A keyword path (`a|b`, which includes `Albums|x`) is not a tag; such Finder tags are never pulled.
+    private static func isPath(_ s: String) -> Bool { s.contains("|") }
 
     static func mirrorSet(_ m: PhotoMetadata) -> [String] {
         var seen = Set<String>()
@@ -104,12 +107,13 @@ public struct FinderTagStore: MetadataStore {
         let pushed = last?.files.map(Set.init)
         let perFile = try files.map { file in
             Dictionary(
-                try Self.read(file).filter { !Self.isStar($0) && !Self.isAlbum($0) }
+                try Self.read(file).filter { !Self.isStar($0) && !Self.isAlbum($0) && !Self.isPath($0) }
                     .map { (Self.key($0), $0.precomposedStringWithCanonicalMapping) },
                 uniquingKeysWith: { a, _ in a })
         }
         let lastByKey = Dictionary(
-            (last?.tags ?? []).filter { !Self.isStar($0) }.map { (Self.key($0), $0) }, uniquingKeysWith: { a, _ in a })
+            (last?.tags ?? []).filter { !Self.isStar($0) && !Self.isPath($0) }.map { (Self.key($0), $0) },
+            uniquingKeysWith: { a, _ in a })
 
         var added: [String: String] = [:]
         for tags in perFile {

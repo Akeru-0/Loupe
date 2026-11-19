@@ -16,6 +16,12 @@ import Testing
         #expect(PhotoGridController.photoIDs(in: [item("12,7"), item("x"), item("3")]) == [3])
     }
 
+    @Test func tagsWithAPathSeparatorAreRefused() {
+        #expect(TagEditorModel.isValidTag("Iceland"))
+        #expect(!TagEditorModel.isValidTag("Trips|Iceland"))
+        #expect(!TagEditorModel.isValidTag("|"))
+    }
+
     @Test func tagsOnSomePhotosArePartial() {
         let tokens = TagEditorModel.tokens(perPhoto: [["Beach", "Iceland"], ["Iceland", "Zoo"], ["Iceland"]])
         #expect(tokens == [

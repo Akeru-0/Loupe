@@ -127,6 +127,7 @@ public final class Importer: Sendable {
     /// Throws only before anything is written: for an invalid destination, a destination on a source's volume,
     /// or too little space. After that, errors are reported per group in the result. Cancellation is honoured
     /// between files; the group in progress is removed and it and the remaining groups are reported as skipped.
+    /// A commit that throws `CancellationError` (the library was stopped) ends the run the same way.
     public func run(_ plan: ImportPlan, progress: @Sendable (ImportProgress) -> Void) async throws -> ImportResult {
         try await run(plan, progress: progress, commit: { try $0() })
     }
@@ -162,9 +163,10 @@ public final class Importer: Sendable {
         let filesTotal = plan.groups.reduce(0) { $0 + $1.allFiles.count }
         var filesDone = 0
         var bytesDone: Int64 = 0
+        var libraryStopped = false
         for group in plan.groups {
             let files = group.allFiles
-            if Task.isCancelled {
+            if Task.isCancelled || libraryStopped {
                 result.skipped += files
             } else {
                 var copied = 0
@@ -179,7 +181,13 @@ public final class Importer: Sendable {
                     }
                     if Task.isCancelled { throw CancellationError() }
                     let temps = staged
-                    let names = try await commit { try self.place(group, temps: temps, digests: digests, in: destination) }
+                    let names: [String]
+                    do {
+                        names = try await commit { try self.place(group, temps: temps, digests: digests, in: destination) }
+                    } catch is CancellationError {
+                        libraryStopped = true  // nothing more can be placed: copy no further groups
+                        throw CancellationError()
+                    }
                     result.imported += names.map { relative.isEmpty ? $0 : relative + "/" + $0 }
                 } catch {
                     let fm = FileManager.default
@@ -331,7 +339,8 @@ public final class Importer: Sendable {
     // MARK: - Defaults
 
     /// Streams `source` into a new file `temp` (never an existing one) in 4 MB chunks, hashing what it reads,
-    /// bypassing the page cache and flushed with `F_FULLFSYNC`, then gives the copy the source's dates.
+    /// bypassing the page cache and flushed with `F_FULLFSYNC`, then gives the copy the source's modification date.
+    /// Its creation date is the import time: the library takes it as the date the photo was added.
     /// The source is opened read-only.
     static let streamCopy: Copier = { source, temp in
         let input = try FileHandle(forReadingFrom: source)
@@ -349,11 +358,13 @@ public final class Importer: Sendable {
         }
         if fcntl(fd, F_FULLFSYNC) != 0 { try output.synchronize() }  // onto the medium, not just the drive cache
         try output.close()
-        let attributes = try FileManager.default.attributesOfItem(atPath: source.path)
-        let dates = [FileAttributeKey.modificationDate, .creationDate].compactMap { key in
-            attributes[key].map { (key, $0) }
+        let fm = FileManager.default
+        let now = Date()
+        if let modified = try fm.attributesOfItem(atPath: source.path)[.modificationDate] {
+            try fm.setAttributes([.modificationDate: modified], ofItemAtPath: temp.path)
         }
-        try FileManager.default.setAttributes(Dictionary(uniqueKeysWithValues: dates), ofItemAtPath: temp.path)
+        // An older modification date also moves the creation date back (BSD `utimes`); set it afterwards.
+        try fm.setAttributes([.creationDate: now], ofItemAtPath: temp.path)
         return FileHash.hex(hasher.finalize())
     }
 

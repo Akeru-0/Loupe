@@ -95,6 +95,15 @@ import LoupeCore
         #expect(try tags(jpg) == ["Red", "\u{2605}4"])
     }
 
+    @Test func pullIgnoresTagsWithAPathSeparator() throws {
+        try set(jpg, ["Trips|Iceland", "Red"])
+        #expect(try store.pull(files: [jpg], lastState: nil) == [.addTag("Red")])
+        // A pushed one that disappears from Finder is not a removal either: such tags never flow back.
+        let state = try store.push(PhotoMetadata(tags: ["Trips|Iceland"]), files: [jpg], lastState: nil)
+        try set(jpg, ["Red"])
+        #expect(try store.pull(files: [jpg], lastState: state) == [.addTag("Red")])
+    }
+
     @Test func pullNeverProducesAlbumChanges() throws {
         try set(jpg, ["Albums|Trip", "Iceland"])
         #expect(try store.pull(files: [jpg], lastState: nil) == [.addTag("Iceland")])

@@ -168,6 +168,46 @@ private func makeLibrary(_ library: IndexedLibrary) throws -> Library {
         #expect(allNames(library.root).isEmpty)
     }
 
+    @Test func importStopsCopyingOnceTheLibraryIsReplaced() async throws {
+        let library = try IndexedLibrary()
+        let volumes = try FakeVolumes()
+        let (_, groups) = try makeCard(volumes)
+        let lib = try makeLibrary(library)
+        await lib.stop()  // the app replaced this library: commits throw CancellationError
+        let copies = Box(0)
+        let counting: Importer.Copier = { source, temp in
+            copies.value += 1
+            return try Importer.streamCopy(source, temp)
+        }
+        let result = try await lib.importFiles(
+            ImportPlan(groups: groups, destinationFolder: ""), progress: { _ in },
+            using: importer(library, index: lib.index, copier: counting))
+        #expect(copies.value == 2)  // IMG_1's two files, then nothing more
+        #expect(result.imported.isEmpty)
+        #expect(result.failed.isEmpty)
+        #expect(Set(result.skipped.map(\.lastPathComponent)) == ["IMG_1.CR2", "IMG_1.JPG", "IMG_2.CR2"])
+        #expect(allNames(library.root).filter { !$0.hasPrefix(".") }.isEmpty)
+        #expect(allNames(library.root).filter { $0.hasSuffix(".loupe-import") }.isEmpty)
+    }
+
+    @Test func importedFilesAreAddedNowButKeepTheirModificationDate() async throws {
+        let library = try IndexedLibrary()
+        let volumes = try FakeVolumes()
+        let (_, groups) = try makeCard(volumes)
+        let old = Date(timeIntervalSince1970: 1_600_000_000)
+        for url in groups.flatMap(\.allFiles) {
+            try FileManager.default.setAttributes([.creationDate: old, .modificationDate: old], ofItemAtPath: url.path)
+        }
+        let started = Date().addingTimeInterval(-2)
+        _ = try await importer(library).run(ImportPlan(groups: groups, destinationFolder: ""), progress: { _ in })
+        for name in ["IMG_1.CR2", "IMG_1.JPG", "IMG_2.CR2"] {
+            let attrs = try FileManager.default.attributesOfItem(atPath: library.root.appendingPathComponent(name).path)
+            #expect(attrs[.modificationDate] as? Date == old)
+            // The scanner's "added" date is the creation date: imports must show in Recently Added.
+            #expect(try #require(attrs[.creationDate] as? Date) >= started)
+        }
+    }
+
     @Test func reimportFindsNothingNew() async throws {
         let library = try IndexedLibrary()
         let volumes = try FakeVolumes()

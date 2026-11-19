@@ -52,6 +52,54 @@ private let devRaw = URL(fileURLWithPath: #filePath)
         #expect(exif?[kCGImagePropertyExifUserComment] as? String == "hello")
     }
 
+    /// A JPEG with IPTC location text, as LightCraft writes it, and a keyword.
+    func iptcLocationJPEG() throws -> URL {
+        let url = dir.appendingPathComponent("iptc.jpg")
+        try TestImages.makeJPEG(at: url, width: 400, height: 300, gps: true)
+        let source = try #require(CGImageSourceCreateWithURL(url as CFURL, nil))
+        let withIPTC = dir.appendingPathComponent("iptc-located.jpg")
+        let dest = try #require(CGImageDestinationCreateWithURL(withIPTC as CFURL, UTType.jpeg.identifier as CFString, 1, nil))
+        let iptc: [CFString: Any] = [
+            kCGImagePropertyIPTCCity: "Reykjavikcity", kCGImagePropertyIPTCProvinceState: "Capitalregionstate",
+            kCGImagePropertyIPTCCountryPrimaryLocationName: "Icelandcountry",
+            kCGImagePropertyIPTCCountryPrimaryLocationCode: "XQZ", kCGImagePropertyIPTCSubLocation: "Harpasublocation",
+            kCGImagePropertyIPTCKeywords: ["keptkeyword"],
+        ]
+        CGImageDestinationAddImageFromSource(dest, source, 0, [kCGImagePropertyIPTCDictionary: iptc] as CFDictionary)
+        #expect(CGImageDestinationFinalize(dest))
+        let text = String(decoding: try Data(contentsOf: withIPTC), as: UTF8.self)
+        #expect(text.contains("Reykjavikcity") && text.contains("Harpasublocation"))
+        return withIPTC
+    }
+
+    @Test func removeLocationDropsIPTCLocationText() throws {
+        let src = try iptcLocationJPEG()
+        let result = try JPEGExporter.highQuality.export(src, kind: .jpeg, removeLocation: true, into: out)
+        let text = String(decoding: try Data(contentsOf: result), as: UTF8.self)
+        let leaked = ["Reykjavikcity", "Capitalregionstate", "Icelandcountry", "Harpasublocation"].filter(text.contains)
+        #expect(leaked.isEmpty)
+        let iptc = try props(result)[kCGImagePropertyIPTCDictionary] as? [CFString: Any]
+        #expect(iptc?[kCGImagePropertyIPTCCountryPrimaryLocationCode] == nil)
+        #expect(iptc?[kCGImagePropertyIPTCKeywords] as? [String] == ["keptkeyword"])
+        #expect(try props(result)[kCGImagePropertyGPSDictionary] == nil)
+
+        let kept = try JPEGExporter.highQuality.export(src, kind: .jpeg, removeLocation: false, into: out)
+        let keptIPTC = try props(kept)[kCGImagePropertyIPTCDictionary] as? [CFString: Any]
+        #expect(keptIPTC?[kCGImagePropertyIPTCCity] as? String == "Reykjavikcity")
+    }
+
+    /// Already true for the lossless path (ImageIO's GPS exclusion takes the IPTC location along); kept as a guard.
+    @Test func originalRemoveLocationDropsIPTCLocationText() throws {
+        let src = try iptcLocationJPEG()
+        let result = try OriginalExporter().export(src, kind: .jpeg, removeLocation: true, into: out)
+        let text = String(decoding: try Data(contentsOf: result), as: UTF8.self)
+        let leaked = ["Reykjavikcity", "Capitalregionstate", "Icelandcountry", "Harpasublocation"].filter(text.contains)
+        #expect(leaked.isEmpty)
+        let iptc = try props(result)[kCGImagePropertyIPTCDictionary] as? [CFString: Any]
+        #expect(iptc?[kCGImagePropertyIPTCCountryPrimaryLocationCode] == nil)
+        #expect(try props(result)[kCGImagePropertyGPSDictionary] == nil)
+    }
+
     @Test func keepsGPSWhenToggleOff() throws {
         let src = try jpeg("a.jpg", 400, 300, gps: true)
         let result = try JPEGExporter.highQuality.export(src, kind: .jpeg, removeLocation: false, into: out)

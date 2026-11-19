@@ -31,9 +31,11 @@ struct TagToken: Hashable, Identifiable {
             .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
     }
 
-    /// "Favorite" and album keywords mean something else in the sidecar, so they can't be tags.
+    /// "Favorite" and album keywords mean something else in the sidecar, so they can't be tags; nor can a name
+    /// with `|`, which is a keyword path separator there.
     static func isValidTag(_ name: String) -> Bool {
         !name.isEmpty && name != Keywords.favorite && name != "Albums" && !name.hasPrefix(Keywords.albumPrefix)
+            && !name.contains("|")
     }
 
     func load() {

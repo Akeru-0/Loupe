@@ -139,6 +139,16 @@ private func tagStrings(_ tag: CGImageMetadataTag) -> [String] {
         #expect(try lcSettings(out) == lcSettings(input))
     }
 
+    @Test func removeTagAlsoRemovesLightCraftPlainHierarchicalItem() throws {
+        let input = try fixtureData("lightcraft-probe-after-edit")
+        let out = try apply([.removeTag("loupe-probe")], to: input)
+        #expect(try XMPDocument(data: out).metadata.tags == [])
+        #expect(!(try listItems(out, "http://purl.org/dc/elements/1.1/", "subject").contains("loupe-probe")))
+        #expect(try listItems(out, "http://ns.adobe.com/lightroom/1.0/", "hierarchicalSubject") == ["Albums|Loupe Probe"])
+        #expect(try XMPDocument(data: out).metadata.albums == ["Loupe Probe"])
+        #expect(try lcSettings(out) == lcSettings(input))
+    }
+
     @Test func removeAlbumKeepsSameNamedTagWhenNoAlbum() throws {
         var doc = XMPDocument.empty()
         doc.apply([.addTag("Iceland")])

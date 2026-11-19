@@ -13,7 +13,10 @@ import LoupeMedia
     init(thumbnails: ThumbnailCache) {
         self.thumbnails = thumbnails
         cache.countLimit = 1000
+        cache.totalCostLimit = 320 << 20  // decoded bytes; the count alone allowed about 1 GB
     }
+
+    private static func cost(_ image: CGImage) -> Int { image.bytesPerRow * image.height }
 
     private static func key(_ file: MediaFile) -> NSString {
         "\(file.url.path)|\(file.size)|\(file.modified.timeIntervalSince1970)" as NSString
@@ -32,7 +35,7 @@ import LoupeMedia
         }
         guard !Task.isCancelled else { return nil }
         let image = await thumbnails.thumbnail(for: file, kind: kind)
-        if let image { cache.setObject(image, forKey: key) }
+        if let image { cache.setObject(image, forKey: key, cost: Self.cost(image)) }
         return image
     }
 
@@ -44,7 +47,7 @@ import LoupeMedia
         let task = Task(priority: .utility) { [weak self] () -> CGImage? in
             let image = await thumbnails.thumbnail(for: file, kind: kind)
             if let self {
-                if let image { self.cache.setObject(image, forKey: key) }
+                if let image { self.cache.setObject(image, forKey: key, cost: Self.cost(image)) }
                 if self.prefetches[key]?.token == token { self.prefetches[key] = nil }
             }
             return image

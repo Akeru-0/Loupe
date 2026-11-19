@@ -22,6 +22,15 @@ public struct JPEGExporter: ShareExporter {
 
     public func canExport(_ kind: VersionKind) -> Bool { kind != .video && kind != .live }
 
+    /// IPTC location text (LightCraft writes City and Country), dropped with "Remove location" like GPS.
+    /// The preset writes no XMP of its own, so its `photoshop:City`/`Iptc4xmpCore:Location` mirrors go too.
+    static var iptcLocationKeys: [CFString] {
+        [
+            kCGImagePropertyIPTCCity, kCGImagePropertyIPTCProvinceState, kCGImagePropertyIPTCCountryPrimaryLocationName,
+            kCGImagePropertyIPTCCountryPrimaryLocationCode, kCGImagePropertyIPTCSubLocation,
+        ]
+    }
+
     public func export(_ file: URL, kind: VersionKind, removeLocation: Bool, into directory: URL) throws -> URL {
         guard let source = CGImageSourceCreateWithURL(file as CFURL, nil) else { throw ShareExportError.unreadable(file) }
         let sourceProps = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any] ?? [:]
@@ -52,7 +61,10 @@ public struct JPEGExporter: ShareExporter {
             tiff[kCGImagePropertyTIFFOrientation] = 1
             props[kCGImagePropertyTIFFDictionary] = tiff
         }
-        if let iptc = sourceProps[kCGImagePropertyIPTCDictionary] { props[kCGImagePropertyIPTCDictionary] = iptc }
+        if var iptc = sourceProps[kCGImagePropertyIPTCDictionary] as? [CFString: Any] {
+            if removeLocation { for key in Self.iptcLocationKeys { iptc[key] = nil } }
+            props[kCGImagePropertyIPTCDictionary] = iptc
+        }
         if !removeLocation, let gps = sourceProps[kCGImagePropertyGPSDictionary] { props[kCGImagePropertyGPSDictionary] = gps }
 
         let folder = directory.appendingPathComponent(UUID().uuidString, isDirectory: true)

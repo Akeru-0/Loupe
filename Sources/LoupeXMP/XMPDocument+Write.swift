@@ -60,7 +60,10 @@ private struct Editor {
         case .setFavorite(let on):
             if on { add(Keywords.favorite, dc, "subject") } else { remove({ $0 == Keywords.favorite }, dc, "subject") }
         case .addTag(let t): add(t, dc, "subject")
-        case .removeTag(let t): remove({ $0 == t }, dc, "subject")
+        case .removeTag(let t):
+            remove({ $0 == t }, dc, "subject")
+            // LightCraft also lists plain tags in lr:hierarchicalSubject; paths (`a|b`) are not this tag.
+            if !t.contains("|") { remove({ $0 == t }, lr, "hierarchicalSubject") }
         case .addToAlbum(let a):
             add(Keywords.albumPrefix + a, dc, "subject")
             add(Keywords.albumPrefix + a, lr, "hierarchicalSubject")
