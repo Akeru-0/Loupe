@@ -8,6 +8,7 @@ struct LibraryToolbar: ToolbarContent {
     private static let columnRange = GridLayout.columnRange
 
     var body: some ToolbarContent {
+        ToolbarItem { ActionCapsule(model: model) }
         ToolbarItem {
             Slider(value: zoom, in: Double(Self.columnRange.lowerBound)...Double(Self.columnRange.upperBound), step: 1) {
                 Text("Zoom")

@@ -84,6 +84,14 @@ public struct LoupeCommands: Commands {
                 .keyboardShortcut("t", modifiers: .command)
                 .disabled(!model.canEditTags)
         }
+        CommandMenu("Image") {
+            Button("Rotate Left") { model.rotateTargets(clockwise: false) }
+                .keyboardShortcut("l", modifiers: .command)
+                .disabled(!model.canRotateTargets)
+            Button("Rotate Right") { model.rotateTargets(clockwise: true) }
+                .keyboardShortcut("r", modifiers: .command)
+                .disabled(!model.canRotateTargets)
+        }
         CommandGroup(after: .sidebar) {
             Toggle("Activity Log", isOn: $model.showsActivityLog)
                 .keyboardShortcut("l", modifiers: [.command, .option])

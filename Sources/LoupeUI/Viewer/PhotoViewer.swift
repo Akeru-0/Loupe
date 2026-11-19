@@ -37,10 +37,7 @@ import SwiftUI
     private(set) var imageFailed = false
     private(set) var player: AVPlayer?
     private(set) var actionEntries: [ActionMenuEntry] = []
-    private(set) var exifLines: [(label: String, value: String)] = []
-    var showsInfo = false {
-        didSet { if showsInfo != oldValue { loadExif() } }
-    }
+    var showsInfo = false
 
     @ObservationIgnored weak var window: NSWindow?
     @ObservationIgnored weak var zoomView: ZoomScrollView?
@@ -51,7 +48,6 @@ import SwiftUI
     @ObservationIgnored private var fullResolutionRequested = false
     @ObservationIgnored private var recordsTask: Task<Void, Never>?
     @ObservationIgnored private var imageTask: Task<Void, Never>?
-    @ObservationIgnored private var exifTask: Task<Void, Never>?
     @ObservationIgnored private var prefetchTasks: [Int64: Task<Void, Never>] = [:]
     @ObservationIgnored private var cachedRecords: [Int64: Records] = [:]
     @ObservationIgnored private var fullImages: [ImageKey: CGImage] = [:]
@@ -152,12 +148,11 @@ import SwiftUI
         let samePhoto = version != nil && version?.photoId == focusedVersion?.photoId
         generation += 1
         imageTask?.cancel()
-        exifTask?.cancel()
         stopPlayer()
         fullResolutionRequested = false
         imageFailed = false
-        exifLines = []
         focusedVersion = version
+        app.viewerFocusedVersion = version
         rebuildActionEntries()
         // Within one photo the previous version stays up until the new one is decoded; another photo starts blank.
         if !samePhoto { setImage(nil, version: nil) }
@@ -170,7 +165,6 @@ import SwiftUI
         } else {
             loadImage(version, url: url)
         }
-        loadExif()
     }
 
     var isStill: Bool { focusedVersion.map { !Self.isMotion($0.kind) } ?? false }
@@ -365,7 +359,7 @@ import SwiftUI
 
     func toggleFavorite() {
         guard let records else { return }
-        let favorite = !records.photo.isFavorite
+        let favorite = ActionBar.favoriteValue(after: [records.photo.isFavorite])
         change(.setFavorite(favorite)) {
             $0.photo.isFavorite = favorite
             $0.metadata.isFavorite = favorite
@@ -430,19 +424,6 @@ import SwiftUI
         run(perform)
     }
 
-    // MARK: - Info
-
-    private func loadExif() {
-        exifTask?.cancel()
-        guard showsInfo, let version = focusedVersion, let url = url(of: version) else { return }
-        let gen = generation
-        exifTask = Task { [weak self] in
-            let lines = await Self.exif(url)
-            guard let self, gen == self.generation, !Task.isCancelled else { return }
-            exifLines = lines
-        }
-    }
-
     // MARK: - Off the main thread
 
     @concurrent nonisolated private static func readRecords(_ id: Int64, index: LibraryIndex) async -> Records? {
@@ -455,10 +436,6 @@ import SwiftUI
     @concurrent nonisolated private static func decode(_ url: URL, maxPixelSize: Int, rotation: Int?) async -> CGImage? {
         guard !Task.isCancelled else { return nil }
         return ImageLoader.image(at: url, maxPixelSize: maxPixelSize, rotation: rotation)
-    }
-
-    @concurrent nonisolated private static func exif(_ url: URL) async -> [(label: String, value: String)] {
-        ExifSummary.lines(for: url)
     }
 }
 
@@ -484,9 +461,9 @@ struct PhotoViewer: View {
                 Divider()
                 ViewerBottomBar(viewer: viewer)
             }
-            if viewer.showsInfo {
+            if viewer.showsInfo, let photoID = viewer.photoID {
                 Divider()
-                InfoPanel(viewer: viewer)
+                InfoPanel(model: model, photoID: photoID, versionID: viewer.focusedVersion?.id)
                     .frame(width: 300)
             }
         }
@@ -559,7 +536,7 @@ private struct ViewerBottomBar: View {
 }
 
 /// A registry action entry as a button, a menu, or (with a default action and choices, like Edit) a split button.
-private struct ActionEntryView: View {
+struct ActionEntryView: View {
     let entry: ActionMenuEntry
     let run: (@escaping ActionPerform) -> Void
 
@@ -591,7 +568,7 @@ private struct ActionEntryView: View {
     }
 }
 
-private struct ActionEntryList: View {
+struct ActionEntryList: View {
     let entries: [ActionMenuEntry]
     let run: (@escaping ActionPerform) -> Void
 

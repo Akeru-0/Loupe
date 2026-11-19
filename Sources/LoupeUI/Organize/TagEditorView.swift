@@ -23,7 +23,7 @@ struct TagToken: Hashable, Identifiable {
         self.photoIDs = photoIDs
     }
 
-    static func tokens(perPhoto: [[String]]) -> [TagToken] {
+    nonisolated static func tokens(perPhoto: [[String]]) -> [TagToken] {
         var counts: [String: Int] = [:]
         for tags in perPhoto { for tag in Set(tags) { counts[tag, default: 0] += 1 } }
         return counts

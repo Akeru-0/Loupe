@@ -59,9 +59,16 @@ public struct SidebarGroup: Identifiable, Sendable {
 
     public var selectedItemID: String? = "library" { didSet { selectedItemChanged() } }
     public var query = PhotoQuery() { didSet { if query != oldValue { observeQuery() } } }
-    public var selection: Set<Int64> = []
+    public var selection: Set<Int64> = [] { didSet { if selection != oldValue { reloadActionBar() } } }
     /// The photo the viewer shows. Close the viewer with `closeViewer()`; setting nil directly is a reset.
-    public var viewerPhotoID: Int64? { didSet { closedViewerPhotoID = nil } }
+    public var viewerPhotoID: Int64? {
+        didSet {
+            closedViewerPhotoID = nil
+            if viewerPhotoID != oldValue { reloadActionBar() }
+        }
+    }
+    /// The version the viewer focuses (set by the viewer); Share in the toolbar shares it.
+    var viewerFocusedVersion: VersionRecord?
     public var mode: BrowseMode = .all {
         didSet {
             query.grouping = mode.grouping
@@ -73,6 +80,11 @@ public struct SidebarGroup: Identifiable, Sendable {
     public var alertMessage: String?
     /// The photos the tag editor (⌘T) is open for.
     public var tagEditorPhotoIDs: [Int64]?
+    /// The action bar's targets as last loaded (`reloadActionBar()`), and the ids they were loaded for.
+    var actionBarSelection: ActionSelection?
+    var actionBarLoadedIDs: [Int64] = []
+    /// Bumped after an action ran, so menus showing state it may have changed (Share's Remove Location) rebuild.
+    var actionBarRevision = 0
 
     public private(set) var sidebar: [SidebarGroup] = []
     public private(set) var photoSections: [PhotoSection] = []
@@ -102,6 +114,7 @@ public struct SidebarGroup: Identifiable, Sendable {
     /// Set by `closeViewer()`, taken once by the grid; any other change of `viewerPhotoID` clears it.
     @ObservationIgnored private var closedViewerPhotoID: Int64?
     @ObservationIgnored private var cardDetector: CardDetector?
+    @ObservationIgnored var actionBarTask: Task<Void, Never>?
 
     public init(
         preferences: any PreferenceStore = UserDefaultsStore.standard,
@@ -155,6 +168,10 @@ public struct SidebarGroup: Identifiable, Sendable {
                 MainActor.assumeIsolated { self?.refreshSidebar() }
             })
         }
+        // Favorites, rotation or versions of the targets may have changed.
+        observers.append(center.addObserver(forName: Library.didChange, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.reloadActionBar() }
+        })
         startCardDetection()
         openLibrary()
     }
@@ -195,6 +212,7 @@ public struct SidebarGroup: Identifiable, Sendable {
         library = nil
         photoSections = []
         viewerPhotoID = nil
+        reloadActionBar()  // drops the old library's records
         isScanning = true
         leaveImport()  // its engine belongs to the old library
 
@@ -226,6 +244,7 @@ public struct SidebarGroup: Identifiable, Sendable {
                 return
             }
             library = lib
+            reloadActionBar()
             log("Opened \(settings.rootPath)")
             observeQuery()
             refreshSidebar()

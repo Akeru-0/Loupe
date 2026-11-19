@@ -231,9 +231,7 @@ import Observation
 
     /// The selection in grid order.
     private func orderedSelection() -> [Int64] {
-        let selected = model.selection
-        guard !selected.isEmpty else { return [] }
-        return shownSections.flatMap { $0.photoIDs.filter(selected.contains) }
+        ActionBar.ordered(model.selection, in: shownSections)
     }
 
     /// Model → grid. With `prune`, ids the grid no longer shows are dropped from the model's selection.
@@ -372,7 +370,7 @@ import Observation
     private func toggleFavorite() {
         let ids = orderedSelection()
         guard !ids.isEmpty else { return }
-        let favorite = !ids.allSatisfy { infos[$0]?.isFavorite == true }
+        let favorite = ActionBar.favoriteValue(after: ids.map { infos[$0]?.isFavorite == true })
         update(ids) { $0.isFavorite = favorite }
         apply(.setFavorite(favorite), to: ids, failure: "Couldn't change Favorite")
     }
