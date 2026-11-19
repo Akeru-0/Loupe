@@ -37,6 +37,7 @@ public enum ImportError: LocalizedError {
     case invalidDestination(String)
     case verificationFailed(URL)
     case sourceInsideLibrary(URL)
+    case sameVolumeAsSource(URL)
 
     public var errorDescription: String? {
         switch self {
@@ -50,6 +51,8 @@ public enum ImportError: LocalizedError {
             return "The copy of \(url.lastPathComponent) did not match the original, so the photo was not imported."
         case .sourceInsideLibrary(let url):
             return "Can't import from \(url.path): it is already inside the library."
+        case .sameVolumeAsSource(let url):
+            return "Can't import from \(url.path) into a library on the same disk."
         }
     }
 }
@@ -62,6 +65,8 @@ public final class Importer: Sendable {
     typealias Copier = @Sendable (_ source: URL, _ temp: URL) throws -> String
     /// Available bytes on the volume holding the URL.
     typealias Capacity = @Sendable (URL) throws -> Int64
+    /// Identifies the volume (file system) holding an existing path; nil if it cannot be read.
+    typealias VolumeIdentity = @Sendable (URL) -> Int64?
 
     private let root: URL
     private let index: LibraryIndex
@@ -69,6 +74,7 @@ public final class Importer: Sendable {
     private let copier: Copier
     private let hasher: DuplicateFinder.Hasher
     private let capacity: Capacity
+    private let volumeIdentity: VolumeIdentity
 
     public convenience init(
         root: URL, index: LibraryIndex, editMarkers: [String],
@@ -76,13 +82,16 @@ public final class Importer: Sendable {
     ) {
         self.init(
             root: root, index: index, editMarkers: editMarkers, excludedFolderNames: excludedFolderNames,
-            copier: Importer.streamCopy, hasher: FileHash.sha256(of:), capacity: Importer.volumeCapacity)
+            copier: Importer.streamCopy, hasher: { try FileHash.sha256(of: $0, uncached: true) },
+            capacity: Importer.volumeCapacity,
+            volumeIdentity: Importer.fileSystemID)
     }
 
     init(
         root: URL, index: LibraryIndex, editMarkers: [String],
         excludedFolderNames: [String] = LibrarySettings(rootPath: "").excludedFolderNames,
-        copier: @escaping Copier, hasher: @escaping DuplicateFinder.Hasher, capacity: @escaping Capacity
+        copier: @escaping Copier, hasher: @escaping DuplicateFinder.Hasher, capacity: @escaping Capacity,
+        volumeIdentity: @escaping VolumeIdentity
     ) {
         self.root = root
         self.index = index
@@ -90,28 +99,46 @@ public final class Importer: Sendable {
         self.copier = copier
         self.hasher = hasher
         self.capacity = capacity
+        self.volumeIdentity = volumeIdentity
     }
 
-    /// Throws only before anything is written: for an invalid destination or too little space. After that,
-    /// errors are reported per group in the result. Cancellation is honoured between files; the group in
-    /// progress is removed and it and the remaining groups are reported as skipped.
+    /// Runs `work` (one group's final renames and bookkeeping) where it cannot race other library changes.
+    typealias Committer = @Sendable (_ work: @Sendable () throws -> [String]) async throws -> [String]
+
+    /// Throws only before anything is written: for an invalid destination, a destination on a source's volume,
+    /// or too little space. After that, errors are reported per group in the result. Cancellation is honoured
+    /// between files; the group in progress is removed and it and the remaining groups are reported as skipped.
     public func run(_ plan: ImportPlan, progress: @Sendable (ImportProgress) -> Void) async throws -> ImportResult {
-        let components = try resolveDestination(plan.destinationFolder)
+        try await run(plan, progress: progress, commit: { try $0() })
+    }
+
+    /// As `run`, with each group's copy and verification outside `commit` and only its renames inside.
+    func run(
+        _ plan: ImportPlan, progress: @Sendable (ImportProgress) -> Void, commit: Committer
+    ) async throws -> ImportResult {
+        let target = try resolveDestination(plan.destinationFolder)
         // Every write goes under the root, so a source inside it could be written next to: refuse.
-        let realRoot = root.resolvingSymlinksInPath().path + "/"
-        if let inside = plan.groups.first(where: { $0.folder.resolvingSymlinksInPath().path.hasPrefix(realRoot) }) {
+        let realRoot = target.realRoot + "/"
+        if let inside = plan.groups.first(where: { (Self.realPath($0.folder) ?? $0.folder.path).hasPrefix(realRoot) }) {
             throw ImportError.sourceInsideLibrary(inside.folder)
         }
+        try checkVolume(of: target.existing, against: plan.groups, folder: plan.destinationFolder)
 
         var sizes: [URL: Int64] = [:]
         for url in plan.groups.flatMap(\.allFiles) { sizes[url] = FileHash.stamp(url)?.size ?? 0 }
         let total = sizes.values.reduce(0, +)
         let needed = Int64((Double(total) * 1.05).rounded(.up))
-        let available = try capacity(root)
+        let available = try capacity(target.existing)
         guard available >= needed else { throw ImportError.notEnoughSpace(needed: needed, available: available) }
 
-        let destination = try createDestination(components)
-        let relative = components.joined(separator: "/")
+        let destination = try createDestination(target.components)
+        // Re-check what was just created: still inside the root, still not on a source's volume.
+        guard let real = Self.realPath(destination), real == target.realRoot || real.hasPrefix(realRoot) else {
+            throw ImportError.invalidDestination(plan.destinationFolder)
+        }
+        try checkVolume(of: destination, against: plan.groups, folder: plan.destinationFolder)
+
+        let relative = target.components.joined(separator: "/")
         var result = ImportResult(destinationFolder: relative)
         let filesTotal = plan.groups.reduce(0) { $0 + $1.allFiles.count }
         var filesDone = 0
@@ -123,18 +150,26 @@ public final class Importer: Sendable {
             } else {
                 var copied = 0
                 var copiedBytes: Int64 = 0
+                var staged: [URL] = []
                 do {
-                    let names = try importGroup(group, into: destination) { url in
+                    let digests = try stage(group, into: destination, temps: &staged) { url in
                         copied += 1
                         copiedBytes += sizes[url] ?? 0
                         progress(ImportProgress(filesDone: filesDone + copied, filesTotal: filesTotal,
                                                 bytesDone: bytesDone + copiedBytes, bytesTotal: total))
                     }
+                    if Task.isCancelled { throw CancellationError() }
+                    let temps = staged
+                    let names = try await commit { try self.place(group, temps: temps, digests: digests, in: destination) }
                     result.imported += names.map { relative.isEmpty ? $0 : relative + "/" + $0 }
-                } catch is CancellationError {
-                    result.skipped += files
                 } catch {
-                    for url in files { result.failed[url] = error }
+                    let fm = FileManager.default
+                    for url in staged where fm.fileExists(atPath: url.path) { try? fm.removeItem(at: url) }
+                    if error is CancellationError {
+                        result.skipped += files
+                    } else {
+                        for url in files { result.failed[url] = error }
+                    }
                 }
             }
             filesDone += files.count
@@ -147,30 +182,37 @@ public final class Importer: Sendable {
 
     // MARK: - One group
 
-    /// Copies, verifies and renames one group into `destination`; returns the final file names. On any error
-    /// every file this call created (temp or final) is removed and the error rethrown.
-    private func importGroup(_ group: PhotoGroup, into destination: URL, copied: (URL) -> Void) throws -> [String] {
+    /// Copies every file of the group to a hidden temp name in `destination` and verifies it; returns the
+    /// sources' SHA-256s. `temps` collects the temp paths this call owns (nothing was there before it started
+    /// copying); the caller removes them on error. Hidden names are never indexed, so this needs no lock.
+    private func stage(
+        _ group: PhotoGroup, into destination: URL, temps: inout [URL], copied: (URL) -> Void
+    ) throws -> [String] {
+        let fm = FileManager.default
+        var digests: [String] = []
+        for source in group.allFiles {
+            if Task.isCancelled { throw CancellationError() }
+            let temp = destination.appendingPathComponent(".\(source.lastPathComponent).loupe-import")
+            if fm.fileExists(atPath: temp.path) { try fm.removeItem(at: temp) }  // left by an interrupted import
+            temps.append(temp)
+            let digest = try copier(source, temp)
+            guard try hasher(temp) == digest else { throw ImportError.verificationFailed(source) }
+            digests.append(digest)
+            copied(source)
+        }
+        return digests
+    }
+
+    /// Renames the verified temp files into place under the first free `(n)` suffix, chosen against the folder
+    /// as it is now, and records them. All or nothing: on error the files already renamed are removed again.
+    private func place(_ group: PhotoGroup, temps: [URL], digests: [String], in destination: URL) throws -> [String] {
         let fm = FileManager.default
         let files = group.allFiles
-        var temps: [URL] = []  // paths this call owns: nothing was there before it started copying
         var placed: [URL] = []
-        var digests: [String] = []
+        var names: [String] = []
         do {
-            for source in files {
-                if Task.isCancelled { throw CancellationError() }
-                let temp = destination.appendingPathComponent(".\(source.lastPathComponent).loupe-import")
-                if fm.fileExists(atPath: temp.path) { try fm.removeItem(at: temp) }  // left by an interrupted import
-                temps.append(temp)
-                let digest = try copier(source, temp)
-                guard try hasher(temp) == digest else { throw ImportError.verificationFailed(source) }
-                digests.append(digest)
-                copied(source)
-            }
-            if Task.isCancelled { throw CancellationError() }
-
             let n = try FileOperations.freeStemSuffix(
                 for: files.map(\.lastPathComponent), stem: group.stem, in: destination, editMarkers: settings.editMarkers)
-            var names: [String] = []
             for (source, temp) in zip(files, temps) {
                 let name = try FileOperations.suffixedName(source.lastPathComponent, stem: group.stem, suffix: n)
                 let final = destination.appendingPathComponent(name)
@@ -179,35 +221,37 @@ public final class Importer: Sendable {
                 placed.append(final)
                 names.append(name)
             }
-
-            let now = Date()
-            let records = zip(zip(files, placed), digests).map { pair, sha in
-                let stamp = FileHash.stamp(pair.1)
-                return (
-                    record: ImportRecord(sha256: sha, sourceName: pair.0.lastPathComponent, importedAt: now),
-                    copy: stamp.map { FileHashRecord(path: pair.1.path, size: $0.size, modified: $0.modified, sha256: sha) })
-            }
-            // The files are verified and in place; a failed bookkeeping write must not undo the import.
-            try? ImportRecord.record(records, in: index)
-            return names
         } catch {
             for url in placed { try? fm.removeItem(at: url) }  // our verified copies, just renamed
-            for url in temps where fm.fileExists(atPath: url.path) { try? fm.removeItem(at: url) }
             throw error
         }
+
+        let now = Date()
+        let records = zip(zip(files, placed), digests).map { pair, sha in
+            let stamp = FileHash.stamp(pair.1)
+            return (
+                record: ImportRecord(sha256: sha, sourceName: pair.0.lastPathComponent, importedAt: now),
+                copy: stamp.map { FileHashRecord(path: pair.1.path, size: $0.size, modified: $0.modified, sha256: sha) })
+        }
+        // The files are verified and in place; a failed bookkeeping write must not undo the import.
+        try? ImportRecord.record(records, in: index)
+        return names
     }
 
     // MARK: - Destination
 
-    /// The destination's components in their on-disk spelling where they exist. Refuses `.`/`..`, hidden,
-    /// excluded and package folders, and anything that is not a folder. Writes nothing.
-    private func resolveDestination(_ folder: String) throws -> [String] {
+    /// The destination's components in their on-disk spelling where they exist, the deepest folder of it that
+    /// exists, and the root's real path. Refuses `.`/`..`, hidden, excluded and package folders, symlinks,
+    /// anything that is not a folder, and anything that resolves outside the root. Writes nothing.
+    private func resolveDestination(
+        _ folder: String
+    ) throws -> (components: [String], existing: URL, realRoot: String) {
         let fm = FileManager.default
         var isDir: ObjCBool = false
-        guard fm.fileExists(atPath: root.path, isDirectory: &isDir), isDir.boolValue else {
-            throw ImportError.invalidDestination(folder)
-        }
+        guard fm.fileExists(atPath: root.path, isDirectory: &isDir), isDir.boolValue, let realRoot = Self.realPath(root)
+        else { throw ImportError.invalidDestination(folder) }
         var url = root
+        var existing = root
         var out: [String] = []
         var exists = true
         for name in folder.split(separator: "/").map(String.init) {
@@ -223,13 +267,34 @@ public final class Importer: Sendable {
                 }
             }
             url.appendPathComponent(actual)
-            if exists, !(fm.fileExists(atPath: url.path, isDirectory: &isDir) && isDir.boolValue) {
-                throw ImportError.invalidDestination(folder)
+            if exists {
+                var st = stat()
+                guard lstat(url.path, &st) == 0, (st.st_mode & S_IFMT) == S_IFDIR else {  // no symlinks, no files
+                    throw ImportError.invalidDestination(folder)
+                }
+                existing = url
             }
             if LoupeIndex.Scanner.ignores(folder: url, settings: settings) { throw ImportError.invalidDestination(folder) }
             out.append(actual)
         }
-        return out
+        guard let real = Self.realPath(existing), real == realRoot || real.hasPrefix(realRoot + "/") else {
+            throw ImportError.invalidDestination(folder)
+        }
+        return (out, existing, realRoot)
+    }
+
+    /// Refuses a destination on the same volume as any source: the library must never be on the card.
+    private func checkVolume(of destination: URL, against groups: [PhotoGroup], folder: String) throws {
+        guard let mine = volumeIdentity(destination) else { throw ImportError.invalidDestination(folder) }
+        for sourceFolder in Set(groups.map(\.folder)) where volumeIdentity(sourceFolder) == mine {
+            throw ImportError.sameVolumeAsSource(sourceFolder)
+        }
+    }
+
+    private static func realPath(_ url: URL) -> String? {
+        guard let p = realpath(url.path, nil) else { return nil }
+        defer { free(p) }
+        return String(cString: p)
     }
 
     /// Creates the missing folders one level at a time (never the root itself).
@@ -247,12 +312,14 @@ public final class Importer: Sendable {
     // MARK: - Defaults
 
     /// Streams `source` into a new file `temp` (never an existing one) in 4 MB chunks, hashing what it reads,
-    /// then gives the copy the source's dates. The source is opened read-only.
+    /// bypassing the page cache and flushed with `F_FULLFSYNC`, then gives the copy the source's dates.
+    /// The source is opened read-only.
     static let streamCopy: Copier = { source, temp in
         let input = try FileHandle(forReadingFrom: source)
         defer { try? input.close() }
         let fd = open(temp.path, O_WRONLY | O_CREAT | O_EXCL, 0o644)
         guard fd >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        _ = fcntl(fd, F_NOCACHE, 1)  // so the verification re-read cannot be served from cached pages
         let output = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
         var hasher = SHA256()
         while let chunk = try autoreleasepool(invoking: { try input.read(upToCount: FileHash.chunkSize) }),
@@ -261,7 +328,7 @@ public final class Importer: Sendable {
             hasher.update(data: chunk)
             try output.write(contentsOf: chunk)
         }
-        try output.synchronize()
+        if fcntl(fd, F_FULLFSYNC) != 0 { try output.synchronize() }  // onto the medium, not just the drive cache
         try output.close()
         let attributes = try FileManager.default.attributesOfItem(atPath: source.path)
         let dates = [FileAttributeKey.modificationDate, .creationDate].compactMap { key in
@@ -269,6 +336,12 @@ public final class Importer: Sendable {
         }
         try FileManager.default.setAttributes(Dictionary(uniqueKeysWithValues: dates), ofItemAtPath: temp.path)
         return FileHash.hex(hasher.finalize())
+    }
+
+    /// `st_dev`: the mounted file system holding the path.
+    static let fileSystemID: VolumeIdentity = { url in
+        var st = stat()
+        return stat(url.path, &st) == 0 ? Int64(st.st_dev) : nil
     }
 
     static let volumeCapacity: Capacity = { url in
@@ -282,16 +355,25 @@ public final class Importer: Sendable {
 }
 
 extension Library {
-    /// Imports `plan` in the serial section, then rescans the destination folder there too.
-    public func importFiles(
+    /// Imports `plan`. Copying and verifying run outside the serial section, so edits, moves and scans go on
+    /// meanwhile; each group's renames and the final rescan of the destination run inside it.
+    public nonisolated func importFiles(
         _ plan: ImportPlan, progress: @escaping @Sendable (ImportProgress) -> Void = { _ in }
     ) async throws -> ImportResult {
         let importer = Importer(
             root: location.rootURL, index: index, editMarkers: settings.editMarkers,
             excludedFolderNames: settings.excludedFolderNames)
-        return try await addingFiles {
-            let result = try await importer.run(plan, progress: progress)
-            return (result, [result.destinationFolder])
+        return try await importFiles(plan, progress: progress, using: importer)
+    }
+
+    nonisolated func importFiles(
+        _ plan: ImportPlan, progress: @escaping @Sendable (ImportProgress) -> Void, using importer: Importer
+    ) async throws -> ImportResult {
+        let result = try await importer.run(plan, progress: progress) { work in
+            try await self.addingFiles { (try work(), []) }
         }
+        // A stopped library throws here; the files are in place and the next scan picks them up.
+        try? await addingFiles { ((), [result.destinationFolder]) }
+        return result
     }
 }

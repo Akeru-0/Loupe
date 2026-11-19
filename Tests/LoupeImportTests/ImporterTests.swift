@@ -34,12 +34,25 @@ private func makeCard(_ volumes: FakeVolumes) throws -> (Card, [PhotoGroup]) {
     return (card, try CardListing.groups(on: card, editMarkers: markers))
 }
 
+/// Stand-in for `st_dev`, since fake card and library share one temp volume: paths under a fake volume are
+/// "the card", everything else "the Mac". It deliberately does not follow symlinks.
+private let fakeVolumeIdentity: Importer.VolumeIdentity = { url in url.path.contains("/loupe-volumes-") ? 1 : 2 }
+
 private func importer(
-    _ library: IndexedLibrary, copier: Importer.Copier? = nil, capacity: Importer.Capacity? = nil
+    _ library: IndexedLibrary, index: LibraryIndex? = nil, copier: Importer.Copier? = nil,
+    capacity: Importer.Capacity? = nil, volumeIdentity: Importer.VolumeIdentity? = nil
 ) -> Importer {
     Importer(
-        root: library.root, index: library.index, editMarkers: markers,
-        copier: copier ?? Importer.streamCopy, hasher: FileHash.sha256(of:), capacity: capacity ?? { _ in Int64.max })
+        root: library.root, index: index ?? library.index, editMarkers: markers,
+        copier: copier ?? Importer.streamCopy, hasher: { try FileHash.sha256(of: $0, uncached: true) }, capacity: capacity ?? { _ in Int64.max },
+        volumeIdentity: volumeIdentity ?? fakeVolumeIdentity)
+}
+
+private func makeLibrary(_ library: IndexedLibrary) throws -> Library {
+    try Library(
+        location: LocalFolderLocation(rootURL: library.root), settings: LibrarySettings(rootPath: library.root.path),
+        registry: FeatureRegistry(), supportDirectory: library.support,
+        cacheDirectory: library.support.appendingPathComponent("cache"))
 }
 
 @Suite struct ImporterTests {
@@ -159,19 +172,99 @@ private func importer(
         let library = try IndexedLibrary()
         let volumes = try FakeVolumes()
         let (_, groups) = try makeCard(volumes)
-        let lib = try Library(
-            location: LocalFolderLocation(rootURL: library.root), settings: LibrarySettings(rootPath: library.root.path),
-            registry: FeatureRegistry(), supportDirectory: library.support,
-            cacheDirectory: library.support.appendingPathComponent("cache"))
+        let lib = try makeLibrary(library)
 
         let hasher = CountingHasher(root: library.root)
         let finder = DuplicateFinder(index: lib.index, root: library.root, photosLibrary: nil, hasher: hasher.hash)
         #expect(try await finder.present(groups).presentFiles.isEmpty)
-        let result = try await lib.importFiles(ImportPlan(groups: groups, destinationFolder: "2026/Card"))
+        let result = try await lib.importFiles(
+            ImportPlan(groups: groups, destinationFolder: "2026/Card"), progress: { _ in },
+            using: importer(library, index: lib.index))
         #expect(result.imported.count == 3)
         #expect(try lib.index.photo(key: "2026/Card/IMG_1") != nil)  // rescanned in the serial section
         let report = try await finder.present(groups)
         #expect(groups.allSatisfy(report.isOnMac))
         #expect(hasher.reads.isEmpty)  // the copies' hashes were cached by the import
+    }
+
+    @Test func symlinkedDestinationIsRefused() async throws {
+        let library = try IndexedLibrary()
+        let volumes = try FakeVolumes()
+        let (card, groups) = try makeCard(volumes)
+        let fm = FileManager.default
+        let cardFolder = card.dcimURL.appendingPathComponent("100CANON")
+        try fm.createSymbolicLink(at: library.root.appendingPathComponent("Card"), withDestinationURL: cardFolder)
+        try fm.createDirectory(at: library.root.appendingPathComponent("Real"), withIntermediateDirectories: false)
+        try fm.createSymbolicLink(at: library.root.appendingPathComponent("Real/Link"), withDestinationURL: cardFolder)
+        let before = snapshot(volumes.url)
+
+        for dest in ["Card", "card/New", "Real/Link", "Real/Link/Deeper"] {
+            await #expect(throws: ImportError.self, "\(dest)") {
+                try await importer(library).run(ImportPlan(groups: groups, destinationFolder: dest), progress: { _ in })
+            }
+        }
+        #expect(snapshot(volumes.url) == before)
+        #expect(allNames(library.root) == ["Card", "Real", "Real/Link"])
+    }
+
+    @Test func libraryOnTheCardsVolumeIsRefused() async throws {
+        let library = try IndexedLibrary()
+        let volumes = try FakeVolumes()
+        let (_, groups) = try makeCard(volumes)
+        let before = snapshot(volumes.url)
+        for dest in ["", "2026/New"] {
+            await #expect(throws: ImportError.self, "\(dest)") {
+                try await importer(library, volumeIdentity: { _ in 7 })  // everything on one volume
+                    .run(ImportPlan(groups: groups, destinationFolder: dest), progress: { _ in })
+            }
+        }
+        #expect(allNames(library.root).isEmpty)
+        #expect(snapshot(volumes.url) == before)
+    }
+
+    @Test func importDoesNotBlockEdits() async throws {
+        let library = try IndexedLibrary()
+        let volumes = try FakeVolumes()
+        let (_, groups) = try makeCard(volumes)
+        try library.lib.addJPEG("Other/A.jpg")
+        let lib = try makeLibrary(library)
+        _ = try await LoupeIndex.Scanner(
+            index: lib.index, location: LocalFolderLocation(rootURL: library.root),
+            settings: LibrarySettings(rootPath: library.root.path)
+        ).fullScan()
+        let other = try #require(try lib.index.photo(key: "Other/A")?.id)
+
+        // The first copy waits (up to 5 s) until the edit below has finished.
+        let started = DispatchSemaphore(value: 0)
+        let gate = DispatchSemaphore(value: 0)
+        let first = Box(true)
+        let gated: Importer.Copier = { source, temp in
+            if first.value {
+                first.value = false
+                started.signal()
+                _ = gate.wait(timeout: .now() + 5)
+            }
+            return try Importer.streamCopy(source, temp)
+        }
+        let done = Box(false)
+        let importer = importer(library, index: lib.index, copier: gated)
+        let task = Task {
+            let result = try await lib.importFiles(
+                ImportPlan(groups: groups, destinationFolder: ""), progress: { _ in }, using: importer)
+            done.value = true
+            return result
+        }
+        await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+            DispatchQueue.global().async { _ = started.wait(timeout: .now() + 5); c.resume() }
+        }
+
+        let errors = await lib.apply([.setRating(3)], to: [other])
+        #expect(errors.isEmpty)
+        #expect(!done.value)  // the edit did not wait for the import
+        gate.signal()
+        let result = try await task.value
+        #expect(result.imported.sorted() == ["IMG_1.CR2", "IMG_1.JPG", "IMG_2.CR2"])
+        #expect(try lib.index.photo(key: "IMG_1") != nil)  // rescanned at the end
+        #expect(try lib.index.metadata(ofPhoto: other).rating == 3)
     }
 }

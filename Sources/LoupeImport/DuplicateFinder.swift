@@ -8,10 +8,12 @@ import LoupeIndex
 public enum FileHash {
     public static let chunkSize = 4 << 20
 
-    /// Lowercase hex SHA-256 of the file's bytes. Opens the file read-only.
-    public static func sha256(of url: URL) throws -> String {
+    /// Lowercase hex SHA-256 of the file's bytes. Opens the file read-only. `uncached` reads past the page
+    /// cache (`F_NOCACHE`), so a just-written copy is verified from the disk.
+    public static func sha256(of url: URL, uncached: Bool = false) throws -> String {
         let handle = try FileHandle(forReadingFrom: url)
         defer { try? handle.close() }
+        if uncached { _ = fcntl(handle.fileDescriptor, F_NOCACHE, 1) }
         var hasher = SHA256()
         while let chunk = try autoreleasepool(invoking: { try handle.read(upToCount: chunkSize) }), !chunk.isEmpty {
             hasher.update(data: chunk)
@@ -54,7 +56,7 @@ public struct DuplicateFinder: Sendable {
     private let hasher: Hasher
 
     public init(index: LibraryIndex, root: URL, photosLibrary: URL?) {
-        self.init(index: index, root: root, photosLibrary: photosLibrary, hasher: FileHash.sha256(of:))
+        self.init(index: index, root: root, photosLibrary: photosLibrary, hasher: { try FileHash.sha256(of: $0) })
     }
 
     init(index: LibraryIndex, root: URL, photosLibrary: URL?, hasher: @escaping Hasher) {
