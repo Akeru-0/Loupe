@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import GRDB
 import LoupeCore
 import LoupeTestSupport
 @testable import LoupeIndex
@@ -290,6 +291,46 @@ private struct Env {
         await e.library.handleFolderChanges([e.lib.url("a")], rescanAll: false)
         #expect(try e.library.index.photo(id: id)?.rating == 4)
         #expect(logs.restored.count == 1)
+    }
+
+    private func pendingFields(_ e: Env, _ id: Int64) async throws -> [String] {
+        try await e.library.index.dbPool.read { db in
+            try String.fetchAll(db, sql: "SELECT field FROM pending_edit WHERE photoId = ? ORDER BY field", arguments: [id])
+        }
+    }
+
+    @Test func pendingEditsFollowAMovedPhoto() async throws {
+        let e = try Env()
+        try e.lib.addJPEG("a/IMG_1.jpg")
+        try FileManager.default.createDirectory(at: e.lib.url("b"), withIntermediateDirectories: true)
+        _ = await e.library.initialSync()
+        let id = try e.id("a/IMG_1")
+        _ = await e.library.apply([.setRating(4)], to: [id])
+        #expect(try await pendingFields(e, id) == ["rating"])
+        #expect(await e.library.move([id], toFolder: "b").isEmpty)
+        let newID = try e.id("b/IMG_1")
+        #expect(newID != id)
+        #expect(try await pendingFields(e, newID) == ["rating"])
+
+        let logs = Logs()
+        let url = e.lib.url("b/IMG_1.xmp")
+        try sidecar(toolkit: "LightCraft", rating: 0).write(to: url, options: .atomic)
+        try FileManager.default.setAttributes([.modificationDate: Date().addingTimeInterval(10)], ofItemAtPath: url.path)
+        await e.library.handleFolderChanges([e.lib.url("b")], rescanAll: false)
+        #expect(try e.library.index.photo(id: newID)?.rating == 4)
+        #expect(try e.sidecarText("b/IMG_1.xmp").contains("<xmp:Rating>4</xmp:Rating>"))
+        #expect(logs.restored.count == 1)
+    }
+
+    @Test func pendingEditsFollowRenameAndDeleteAlbum() async throws {
+        let e = try Env()
+        try e.lib.addJPEG("a/IMG_1.jpg")
+        _ = await e.library.initialSync()
+        _ = await e.library.apply([.setRating(4)], to: [try e.id("a/IMG_1")])
+        #expect(try await e.library.renameFolder("a", to: "c") == "c")
+        #expect(try await pendingFields(e, try e.id("c/IMG_1")) == ["rating"])
+        #expect(await e.library.deleteAlbum("c").isEmpty)
+        #expect(try await pendingFields(e, try e.id("IMG_1")) == ["rating"])
     }
 
     @Test func lightCraftMergedIntoLoupeCreatedSidecarIsRecognised() async throws {

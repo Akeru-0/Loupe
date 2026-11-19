@@ -253,12 +253,14 @@ public actor Library {
     }
 
     /// Pulls store-side changes into XMP; with `pushIfUnchanged`, otherwise mirrors the index to the stores.
-    private func syncStores(photoID id: Int64, pushIfUnchanged: Bool) async {
-        guard !registry.metadataStores.isEmpty else { return }
+    /// Returns true if pulled changes were applied.
+    @discardableResult
+    private func syncStores(photoID id: Int64, pushIfUnchanged: Bool) async -> Bool {
+        guard !registry.metadataStores.isEmpty else { return false }
         do {
             let group = try index.groupFiles(ofPhoto: id, root: location.rootURL)
             let files = group.versions.map(\.file.url).filter { FileManager.default.fileExists(atPath: $0.path) }
-            guard !files.isEmpty else { return }
+            guard !files.isEmpty else { return false }
             var pulled: [MetadataChange] = []
             for store in registry.metadataStores {
                 let last = try await mirrorState(photoID: id, store: store.id)
@@ -266,12 +268,14 @@ public actor Library {
             }
             if !pulled.isEmpty {
                 if let error = await applyLocked(pulled, to: [id])[id] { throw error }
+                return true
             } else if pushIfUnchanged {
                 try await pushToStores(try index.metadata(ofPhoto: id), photoID: id, files: files)
             }
         } catch {
             log("Metadata sync failed for photo \(id): \(error)")
         }
+        return false
     }
 
     // MARK: - File operations
@@ -300,6 +304,8 @@ public actor Library {
         let destKey = components.joined(separator: "/").precomposedStringWithCanonicalMapping
         var rescan: Set<String> = []
         var coverMoves: [(old: String, new: String)] = []
+        let carried = await carriedState(ofPhotos: ids)
+        var carry: [(state: CarriedState, newKey: String)] = []
         for id in ids {
             do {
                 let photo = try index.photo(id: id)
@@ -311,9 +317,10 @@ public actor Library {
                 rescan.insert(destKey)
                 let newKey = destKey.isEmpty ? moved.stem : destKey + "/" + moved.stem
                 coverMoves.append((photo.key, newKey))
+                if let state = carried[id] { carry.append((state, newKey)) }
             } catch { errors[id] = error }
         }
-        await rescanFolders(rescan)
+        await rescanFolders(rescan, carrying: carry)
         updateAlbumCovers(coverMoves)
         return errors
     }
@@ -439,6 +446,10 @@ public actor Library {
         let newURL = parent.appendingPathComponent(newName, isDirectory: true)
         let fm = FileManager.default
         let newKey = PhotoGrouper.stemKey(newName)
+        let oldNFC = oldPath.precomposedStringWithCanonicalMapping
+        let newNFC = newPath.precomposedStringWithCanonicalMapping
+        let inside = await photoKeys(inFolderTree: oldNFC)
+        let carried = await carriedState(ofPhotos: inside.map(\.id))
         if PhotoGrouper.stemKey(current) == newKey {
             // Case or Unicode spelling only: the same entry, so a plain rename is safe (and the only way on APFS).
             guard rename(url.path, newURL.path) == 0 else { throw CocoaError(.fileWriteUnknown) }
@@ -451,12 +462,18 @@ public actor Library {
         }
 
         // Rescan is not recursive: a full scan drops the old paths and picks up the new ones.
+        var scanned: [Int64] = []
         do {
             let report = try await scanner.fullScan()
             logFailed(report)
+            scanned = report.scannedPhotoIDs
         } catch { logScanFailure(error) }
-        let oldPrefix = oldPath.precomposedStringWithCanonicalMapping.lowercased()
-        let newNFC = newPath.precomposedStringWithCanonicalMapping
+        let carry = inside.compactMap { photo in
+            carried[photo.id].map { (state: $0, newKey: newNFC + photo.key.dropFirst(oldNFC.count)) }
+        }
+        await restoreState(carry)
+        await syncPhotosWithoutMirrorState(scanned)
+        let oldPrefix = oldNFC.lowercased()
         rewriteAlbumCovers { cover in
             let key = cover.precomposedStringWithCanonicalMapping
             guard key.lowercased().hasPrefix(oldPrefix + "/") else { return nil }
@@ -499,10 +516,106 @@ public actor Library {
         if invalid { throw CocoaError(.fileWriteInvalidFileName) }
     }
 
-    private func rescanFolders(_ folders: Set<String>) async {
+    /// Rescans after Loupe's own file work. `carrying`: state of photos that moved (see `carriedState`).
+    private func rescanFolders(
+        _ folders: Set<String>, carrying carry: [(state: CarriedState, newKey: String)] = []
+    ) async {
+        var scanned: [Int64] = []
         for rel in folders.sorted() {
-            do { logFailed(try await scanner.rescan(folder: rel)) } catch { logScanFailure(error) }
+            do {
+                let report = try await scanner.rescan(folder: rel)
+                logFailed(report)
+                scanned += report.scannedPhotoIDs
+            } catch { logScanFailure(error) }
         }
+        await restoreState(carry)
+        await syncPhotosWithoutMirrorState(scanned)
+    }
+
+    // MARK: - State carried across Loupe's own moves
+
+    /// What a photo loses when Loupe moves or renames its files: the scanner indexes it under a new id, and the
+    /// old row's store mirror state and stale-revert entries go with the old row.
+    private struct CarriedState: Sendable {
+        var mirror: [(storeId: String, state: Data)] = []
+        var pending: [StaleRevertGuard.Pending] = []
+    }
+
+    private func carriedState(ofPhotos ids: [Int64]) async -> [Int64: CarriedState] {
+        do {
+            return try await index.dbPool.read { db in
+                var out: [Int64: CarriedState] = [:]
+                for id in ids {
+                    var c = CarriedState()
+                    for row in try Row.fetchAll(
+                        db, sql: "SELECT storeId, state FROM mirror_state WHERE photoId = ?", arguments: [id])
+                    {
+                        c.mirror.append((row["storeId"], row["state"]))
+                    }
+                    c.pending = try Self.pendingEntries(db, photoID: id)
+                    if !c.mirror.isEmpty || !c.pending.isEmpty { out[id] = c }
+                }
+                return out
+            }
+        } catch {
+            log("Could not read the sync state of moved photos: \(error)")
+            return [:]
+        }
+    }
+
+    /// Gives the photo now indexed at each `newKey` the state captured for it before the move.
+    private func restoreState(_ carry: [(state: CarriedState, newKey: String)]) async {
+        for (state, key) in carry {
+            guard let id = (try? index.photo(key: key))?.flatMap(\.id) else { continue }
+            do {
+                try await index.dbPool.write { db in
+                    for m in state.mirror {
+                        try db.execute(
+                            sql: "INSERT OR REPLACE INTO mirror_state(photoId, storeId, state) VALUES (?, ?, ?)",
+                            arguments: [id, m.storeId, m.state])
+                    }
+                    for p in state.pending {
+                        try db.execute(
+                            sql: "INSERT OR REPLACE INTO pending_edit(photoId, field, value, previous) VALUES (?, ?, ?, ?)",
+                            arguments: [id, p.field, p.value, p.previous])
+                    }
+                }
+            } catch {
+                log("Could not keep the sync state of \(key): \(error)")
+            }
+        }
+    }
+
+    /// Ids and keys of the photos in `folder` (an NFC folder key) and its subfolders.
+    private func photoKeys(inFolderTree folder: String) async -> [(id: Int64, key: String)] {
+        let locationID = location.id
+        let escaped = folder.replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "%", with: "\\%").replacingOccurrences(of: "_", with: "\\_")
+        let photos = (try? await index.dbPool.read { db in
+            try PhotoRecord.fetchAll(
+                db, sql: "SELECT * FROM photo WHERE locationId = ? AND (folderPath = ? OR folderPath LIKE ? ESCAPE '\\')",
+                arguments: [locationID, folder, escaped + "/%"])
+        }) ?? []
+        // LIKE ignores ASCII case; keep exact matches only.
+        return photos.filter { $0.folderPath == folder || $0.folderPath.hasPrefix(folder + "/") }
+            .compactMap { p in p.id.map { ($0, p.key) } }
+    }
+
+    /// Photos Loupe's own work (re)indexed that no store has seen: synced like the watcher does, so a later
+    /// Loupe edit is pushed against a known state instead of reading the files' tags back as user additions.
+    /// Returns true if store-side changes were applied.
+    @discardableResult
+    private func syncPhotosWithoutMirrorState(_ ids: [Int64]) async -> Bool {
+        guard !registry.metadataStores.isEmpty else { return false }
+        var changed = false
+        for id in ids.sorted() {
+            let known = (try? await index.dbPool.read { db in
+                try Bool.fetchOne(db, sql: "SELECT EXISTS(SELECT 1 FROM mirror_state WHERE photoId = ?)", arguments: [id])
+            }) ?? nil
+            if known == true { continue }
+            if await syncStores(photoID: id, pushIfUnchanged: true) { changed = true }
+        }
+        return changed
     }
 
     private func updateAlbumCovers(_ moves: [(old: String, new: String)]) {
