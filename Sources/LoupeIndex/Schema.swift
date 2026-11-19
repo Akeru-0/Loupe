@@ -68,6 +68,23 @@ enum Schema {
                 );
                 """)
         }
+        migrator.registerMigration("v3") { db in
+            // Import: SHA-256 cache of library and Photos-library files (reused while size and mtime match),
+            // and a record of every file imported from a card.
+            try db.execute(sql: """
+                CREATE TABLE file_hash (
+                    path TEXT PRIMARY KEY NOT NULL,
+                    size INTEGER NOT NULL,
+                    modified DOUBLE NOT NULL,
+                    sha256 TEXT NOT NULL
+                );
+                CREATE TABLE import_record (
+                    sha256 TEXT PRIMARY KEY NOT NULL,
+                    sourceName TEXT NOT NULL,
+                    importedAt DOUBLE NOT NULL
+                );
+                """)
+        }
         return migrator
     }
 }

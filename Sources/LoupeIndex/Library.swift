@@ -19,7 +19,7 @@ public actor Library {
     public nonisolated let location: any StorageLocation
 
     private let scanner: LoupeIndex.Scanner
-    private let settings: LibrarySettings
+    public nonisolated let settings: LibrarySettings
     private let registry: FeatureRegistry
     private var watcher: FolderWatcher?
     /// Set by `stop()`: watcher callbacks still queued afterwards are ignored.
@@ -461,6 +461,23 @@ public actor Library {
             return newNFC + key.dropFirst(oldPrefix.count)
         }
         return newPath
+    }
+
+    /// Runs `work` in the serial section, then rescans the root-relative folders it returns. For modules above
+    /// the index that add files to the library (the importer), so a scan never sees half-done work.
+    public func addingFiles<T: Sendable>(
+        _ work: @Sendable () async throws -> (result: T, folders: Set<String>)
+    ) async throws -> T {
+        guard !isStopped else { throw CancellationError() }
+        let outcome: Result<T, any Error> = await serialized {
+            guard !isStopped else { return .failure(CancellationError()) }  // stopped while waiting
+            do {
+                let (result, folders) = try await work()
+                await rescanFolders(folders)
+                return .success(result)
+            } catch { return .failure(error) }
+        }
+        return try outcome.get()
     }
 
     private func validateFolderName(_ name: String) throws {

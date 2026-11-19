@@ -61,29 +61,12 @@ public enum FileOperations {
         }
         if sameDirectory(g.folder, destination) { return g }
 
-        let listing = try fm.contentsOfDirectory(atPath: destination.path)
-        let existing = Set(listing.map(PhotoGrouper.stemKey))
-        let grouper = PhotoGrouper(editMarkers: editMarkers)
-        let baseline = memberSets(grouper, listing, in: destination)
         let files = g.allFiles
-        var newStem = g.stem
-        var targets: [(from: URL, to: URL)] = []
-        var n = 0
-        while true {
-            newStem = n == 0 ? g.stem : "\(g.stem) (\(n))"
-            targets = try files.map { url in
-                let name = n == 0
-                    ? url.lastPathComponent
-                    : try replacingLeadingStem(in: url.lastPathComponent, key: g.stemKey, with: newStem)
-                return (url, destination.appendingPathComponent(name))
-            }
-
-            if !targets.contains(where: { existing.contains(PhotoGrouper.stemKey($0.to.lastPathComponent)) }),
-                staysSeparate(grouper, listing, baseline, targets.map(\.to.lastPathComponent), in: destination)
-            { break }
-
-            n += 1
-            if n > 100 { throw FileOperationError.noFreeName(g.stem, destination: destination) }
+        let n = try freeStemSuffix(
+            for: files.map(\.lastPathComponent), stem: g.stem, in: destination, editMarkers: editMarkers)
+        let newStem = suffixedStem(g.stem, n)
+        let targets: [(from: URL, to: URL)] = try files.map { url in
+            (url, destination.appendingPathComponent(try suffixedName(url.lastPathComponent, stem: g.stem, suffix: n)))
         }
 
         var moved: [(from: URL, to: URL)] = []
@@ -138,6 +121,35 @@ public enum FileOperations {
         return done.map(\.trashed)
     }
 
+
+    /// The lowest `n` (0 = keep the names) such that the group's files named `names`, renamed with `suffixedName`,
+    /// collide with nothing in `destination` and form exactly one new group there without changing the groups
+    /// already in it. Throws `noFreeName` after 100 tries.
+    public static func freeStemSuffix(
+        for names: [String], stem: String, in destination: URL, editMarkers: [String]
+    ) throws -> Int {
+        let listing = try FileManager.default.contentsOfDirectory(atPath: destination.path)
+        let existing = Set(listing.map(PhotoGrouper.stemKey))
+        let grouper = PhotoGrouper(editMarkers: editMarkers)
+        let baseline = memberSets(grouper, listing, in: destination)
+        var n = 0
+        while true {
+            let targets = try names.map { try suffixedName($0, stem: stem, suffix: n) }
+            if !targets.contains(where: { existing.contains(PhotoGrouper.stemKey($0)) }),
+                staysSeparate(grouper, listing, baseline, targets, in: destination)
+            { return n }
+
+            n += 1
+            if n > 100 { throw FileOperationError.noFreeName(stem, destination: destination) }
+        }
+    }
+
+    /// `name` with its leading `stem` replaced by `stem (n)`; unchanged for `n == 0`.
+    public static func suffixedName(_ name: String, stem: String, suffix n: Int) throws -> String {
+        n == 0 ? name : try replacingLeadingStem(in: name, key: PhotoGrouper.stemKey(stem), with: suffixedStem(stem, n))
+    }
+
+    public static func suffixedStem(_ stem: String, _ n: Int) -> String { n == 0 ? stem : "\(stem) (\(n))" }
 
     // MARK: - Helpers
 
