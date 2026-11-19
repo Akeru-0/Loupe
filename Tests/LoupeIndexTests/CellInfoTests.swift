@@ -50,6 +50,21 @@ private func insert(
         #expect(info[plain]?.badges == [])
     }
 
+    @Test func actionFlagsCarryFavoriteAndDisplayKind() throws {
+        let i = try makeIndex()
+        let pair = try insert(i, "IMG_1", fav: true, [("IMG_1.CR2", .raw, nil), ("IMG_1.JPG", .jpeg, nil)], display: 1)
+        let live = try insert(i, "IMG_2", [("IMG_2.MOV", .live, 2.5)])
+        let clip = try insert(i, "clip", [("clip.mov", .video, 12)])
+        let noDisplay = try insert(i, "odd", [("odd.CR2", .raw, nil)], display: -1)
+        let flags = try i.actionFlags(ids: [pair, live, clip, noDisplay, 9999])
+        #expect(flags[pair] == ActionFlags(isFavorite: true, displayKind: .jpeg))
+        #expect(flags[live] == ActionFlags(isFavorite: false, displayKind: .live))
+        #expect(flags[clip] == ActionFlags(isFavorite: false, displayKind: .video))
+        #expect(flags[noDisplay] == ActionFlags(isFavorite: false, displayKind: .raw))  // first version, as cells do
+        #expect(flags[9999] == nil)
+        #expect(try i.actionFlags(ids: []).isEmpty)
+    }
+
     @Test func carriesDisplayVersionAndMetadata() throws {
         let i = try makeIndex()
         let id = try insert(i, "IMG_1", rating: 4, fav: true, lc: true,

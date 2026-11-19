@@ -116,3 +116,36 @@ extension LibraryIndex {
         "[" + ids.map(String.init).joined(separator: ",") + "]"
     }
 }
+
+/// What the toolbar's action buttons need to know about a photo: whether it is a favorite and what it shows.
+public struct ActionFlags: Hashable, Sendable {
+    public var isFavorite: Bool
+    /// The display version's kind (the first version's without one); nil when the photo has no versions.
+    public var displayKind: VersionKind?
+
+    public init(isFavorite: Bool, displayKind: VersionKind?) {
+        self.isFavorite = isFavorite
+        self.displayKind = displayKind
+    }
+}
+
+extension LibraryIndex {
+    /// `ActionFlags` for `ids` in one query; unknown ids are left out.
+    public func actionFlags(ids: [Int64]) throws -> [Int64: ActionFlags] {
+        guard !ids.isEmpty else { return [:] }
+        let rows = try dbPool.read { db in
+            try GRDB.Row.fetchAll(db, sql: """
+                SELECT p.id, p.isFavorite,
+                    (SELECT v.kind FROM version v WHERE v.photoId = p.id ORDER BY v.isDisplay DESC, v.id LIMIT 1) AS kind
+                FROM photo p WHERE p.id IN (SELECT value FROM json_each(?))
+                """, arguments: [Self.jsonList(ids)])
+        }
+        var result: [Int64: ActionFlags] = [:]
+        result.reserveCapacity(rows.count)
+        for row in rows {
+            let kind: String? = row["kind"]
+            result[row["id"]] = ActionFlags(isFavorite: row["isFavorite"], displayKind: kind.flatMap(VersionKind.init))
+        }
+        return result
+    }
+}

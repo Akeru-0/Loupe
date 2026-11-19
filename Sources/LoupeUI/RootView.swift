@@ -85,10 +85,10 @@ public struct LoupeCommands: Commands {
                 .disabled(!model.canEditTags)
         }
         CommandMenu("Image") {
-            Button("Rotate Left") { model.rotateTargets(clockwise: false) }
+            Button("Rotate Left") { model.rotateFromMenu(clockwise: false) }
                 .keyboardShortcut("l", modifiers: .command)
                 .disabled(!model.canRotateTargets)
-            Button("Rotate Right") { model.rotateTargets(clockwise: true) }
+            Button("Rotate Right") { model.rotateFromMenu(clockwise: true) }
                 .keyboardShortcut("r", modifiers: .command)
                 .disabled(!model.canRotateTargets)
         }

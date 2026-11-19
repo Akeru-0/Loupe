@@ -80,11 +80,8 @@ public struct SidebarGroup: Identifiable, Sendable {
     public var alertMessage: String?
     /// The photos the tag editor (⌘T) is open for.
     public var tagEditorPhotoIDs: [Int64]?
-    /// The action bar's targets as last loaded (`reloadActionBar()`), and the ids they were loaded for.
-    var actionBarSelection: ActionSelection?
-    var actionBarLoadedIDs: [Int64] = []
-    /// Bumped after an action ran, so menus showing state it may have changed (Share's Remove Location) rebuild.
-    var actionBarRevision = 0
+    /// Favorite and display kind of photos the action bar targeted, as last loaded (`reloadActionBar()`).
+    var actionFlags: [Int64: ActionFlags] = [:]
 
     public private(set) var sidebar: [SidebarGroup] = []
     public private(set) var photoSections: [PhotoSection] = []

@@ -488,39 +488,11 @@ import Observation
         let menu = NSMenu()
         menu.autoenablesItems = false
         for group in actionEntries() {
-            for entry in group { menu.addItem(menuItem(entry)) }
+            for entry in group { menu.addItem(ActionMenuItems.item(entry) { [weak self] in self?.run($0) }) }
             menu.addItem(.separator())
         }
         for item in AlbumMenu.items(for: ids, model: model) { menu.addItem(item) }
         return menu
-    }
-
-    private final class Perform: NSObject {
-        let run: @MainActor (any ActionContext) async throws -> Void
-        init(_ run: @escaping @MainActor (any ActionContext) async throws -> Void) { self.run = run }
-    }
-
-    private func menuItem(_ entry: ActionMenuEntry) -> NSMenuItem {
-        let item = NSMenuItem(title: entry.title, action: nil, keyEquivalent: entry.shortcut.map { String($0) } ?? "")
-        item.keyEquivalentModifierMask = []
-        item.isEnabled = entry.isEnabled
-        if let symbol = entry.systemImage { item.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil) }
-        if !entry.children.isEmpty {
-            let submenu = NSMenu(title: entry.title)
-            submenu.autoenablesItems = false
-            for child in entry.children { submenu.addItem(menuItem(child)) }
-            item.submenu = submenu
-        } else if let perform = entry.perform {
-            item.target = self
-            item.action = #selector(runMenuAction(_:))
-            item.representedObject = Perform(perform)
-        }
-        return item
-    }
-
-    @objc private func runMenuAction(_ sender: NSMenuItem) {
-        guard let perform = sender.representedObject as? Perform else { return }
-        run(perform.run)
     }
 
     private func performShortcut(_ key: Character) {

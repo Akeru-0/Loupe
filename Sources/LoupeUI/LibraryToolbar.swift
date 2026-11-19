@@ -9,6 +9,8 @@ struct LibraryToolbar: ToolbarContent {
 
     var body: some ToolbarContent {
         ToolbarItem { ActionCapsule(model: model) }
+        // Its own capsule: macOS 26 merges adjacent toolbar items into one.
+        if #available(macOS 26.0, *) { ToolbarSpacer(.fixed) }
         ToolbarItem {
             Slider(value: zoom, in: Double(Self.columnRange.lowerBound)...Double(Self.columnRange.upperBound), step: 1) {
                 Text("Zoom")

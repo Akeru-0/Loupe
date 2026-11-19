@@ -1,31 +1,27 @@
 import Foundation
 import LoupeCore
+import LoupeFeatures
+import LoupeIndex
 import Testing
 @testable import LoupeUI
 
 /// The toolbar's action capsule: what it acts on, the favorite rule it shares with F, and when each button works.
+private final class MemoryPreferences: PreferenceStore, @unchecked Sendable {
+    private var values: [String: Any] = [:]
+    func string(forKey key: String) -> String? { values[key] as? String }
+    func bool(forKey key: String) -> Bool? { values[key] as? Bool }
+    func set(_ value: String?, forKey key: String) { values[key] = value }
+    func set(_ value: Bool, forKey key: String) { values[key] = value }
+}
+
 @MainActor @Suite struct ActionBarTests {
     private let sections = [
         PhotoSection(id: "a", title: "A", photoIDs: [30, 10]),
         PhotoSection(id: "b", title: "B", photoIDs: [20, 40]),
     ]
-    private let root = URL(fileURLWithPath: "/tmp/lib", isDirectory: true)
 
-    private func photo(_ id: Int64, favorite: Bool = false) -> PhotoRecord {
-        PhotoRecord(id: id, locationId: "l", folderPath: "", stem: "p\(id)", stemKey: "p\(id)",
-                    addedDate: Date(timeIntervalSince1970: 0), isFavorite: favorite)
-    }
-
-    private func version(_ photo: Int64, _ n: Int, _ kind: VersionKind, display: Bool) -> VersionRecord {
-        VersionRecord(id: photo * 10 + Int64(n), photoId: photo, path: "p\(photo).\(kind)",
-                      kind: kind, size: 1, modified: Date(timeIntervalSince1970: 0), isDisplay: display)
-    }
-
-    /// A loaded selection: each photo with its versions as (kind, isDisplay).
-    private func selection(_ photos: [(PhotoRecord, [(VersionKind, Bool)])]) -> ActionSelection {
-        var versions: [Int64: [VersionRecord]] = [:]
-        for (p, vs) in photos { versions[p.id!] = vs.enumerated().map { version(p.id!, $0.offset, $0.element.0, display: $0.element.1) } }
-        return ActionSelection(photos: photos.map(\.0), versions: versions, root: root)
+    private func flags(_ entries: [(Int64, Bool, VersionKind?)]) -> [Int64: ActionFlags] {
+        Dictionary(uniqueKeysWithValues: entries.map { ($0.0, ActionFlags(isFavorite: $0.1, displayKind: $0.2)) })
     }
 
     // MARK: - Targets
@@ -43,6 +39,23 @@ import Testing
         #expect(ActionBar.targets(viewerPhotoID: 77, selection: [30], sections: sections) == [77])
     }
 
+    @Test func nothingIsTargetedBehindTheImportWindowOrTheTagEditor() {
+        #expect(ActionBar.targets(viewerPhotoID: nil, selection: [30], sections: sections, showsImport: true).isEmpty)
+        #expect(ActionBar.targets(viewerPhotoID: 20, selection: [], sections: sections, showsImport: true).isEmpty)
+        #expect(ActionBar.targets(viewerPhotoID: nil, selection: [30], sections: sections, editsTags: true).isEmpty)
+        #expect(ActionBar.targets(viewerPhotoID: 20, selection: [], sections: sections, editsTags: true).isEmpty)
+    }
+
+    @Test func theModelTargetsNothingWhileTheTagEditorIsOpen() {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("loupe-ui-\(UUID().uuidString)")
+        let model = AppModel(preferences: MemoryPreferences(), rootOverride: nil, supportDirectory: dir, cacheDirectory: dir)
+        model.viewerPhotoID = 5
+        #expect(model.actionTargetIDs == [5])
+        model.tagEditorPhotoIDs = [5]
+        #expect(model.actionTargetIDs.isEmpty)
+        #expect(!model.actionBarState.canRotate && !model.actionBarState.canPlay)
+    }
+
     // MARK: - Favorite rule (shared with the F key)
 
     @Test func favoriteSetsAllUnlessAllAreFavorites() {
@@ -55,40 +68,41 @@ import Testing
     // MARK: - Enabled states
 
     @Test func nothingTargetedDisablesAllButPlay() {
-        let state = ActionBarState(targets: [], loaded: nil, viewHasPhotos: true)
+        let state = ActionBarState(targets: [], flags: [:], viewHasPhotos: true)
         #expect(!state.canInfo && !state.canShare && !state.canFavorite && !state.canRotate)
         #expect(!state.isFavorite)
         #expect(state.canPlay)  // starts from the first photo of the view
-        #expect(!ActionBarState(targets: [], loaded: nil, viewHasPhotos: false).canPlay)
+        #expect(!ActionBarState(targets: [], flags: [:], viewHasPhotos: false).canPlay)
     }
 
     @Test func heartIsFilledOnlyWhenEveryTargetIsAFavorite() {
-        let loaded = selection([(photo(1, favorite: true), [(.jpeg, true)]), (photo(2), [(.jpeg, true)])])
-        let some = ActionBarState(targets: [1, 2], loaded: loaded, viewHasPhotos: true)
+        let loaded = flags([(1, true, .jpeg), (2, false, .jpeg)])
+        let some = ActionBarState(targets: [1, 2], flags: loaded, viewHasPhotos: true)
         #expect(some.canInfo && some.canShare && some.canFavorite && some.canPlay)
         #expect(!some.isFavorite)
-        #expect(ActionBarState(targets: [1], loaded: loaded, viewHasPhotos: true).isFavorite)
+        #expect(ActionBarState(targets: [1], flags: loaded, viewHasPhotos: true).isFavorite)
         // Not loaded yet (the selection just changed): not shown as a favorite.
-        #expect(!ActionBarState(targets: [1, 3], loaded: loaded, viewHasPhotos: true).isFavorite)
+        #expect(!ActionBarState(targets: [1, 3], flags: loaded, viewHasPhotos: true).isFavorite)
     }
 
     @Test func videosCannotBeRotated() {
-        let loaded = selection([
-            (photo(1), [(.video, true)]),
-            (photo(2), [(.live, true)]),  // a Live Photo's motion file with no still
-            (photo(3), [(.heic, true), (.live, false)]),  // a Live Photo: its still rotates
-            (photo(4), [(.raw, false), (.jpeg, true)]),
+        let loaded = flags([
+            (1, false, .video),
+            (2, false, .live),  // a Live Photo's motion file with no still
+            (3, false, .heic),  // a Live Photo's still (or any still) rotates
+            (4, false, .jpeg),
+            (5, false, nil),  // no versions left
         ])
         func canRotate(_ ids: [Int64]) -> Bool {
-            ActionBarState(targets: ids, loaded: loaded, viewHasPhotos: true).canRotate
+            ActionBarState(targets: ids, flags: loaded, viewHasPhotos: true).canRotate
         }
         #expect(!canRotate([1]))
-        #expect(!canRotate([1, 2]))
+        #expect(!canRotate([1, 2, 5]))
         #expect(canRotate([3]))
         #expect(canRotate([1, 4]))
         // Not loaded yet: not known to be a video, so the button stays usable (the action re-checks).
         #expect(canRotate([1, 9]))
-        #expect(ActionBar.rotatable(in: loaded) == [3, 4])
+        #expect(ActionBar.rotatable([1, 2, 3, 4, 5, 9], flags: loaded) == [3, 4])
     }
 
     // MARK: - Info

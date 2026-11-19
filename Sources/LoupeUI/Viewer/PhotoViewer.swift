@@ -536,7 +536,7 @@ private struct ViewerBottomBar: View {
 }
 
 /// A registry action entry as a button, a menu, or (with a default action and choices, like Edit) a split button.
-struct ActionEntryView: View {
+private struct ActionEntryView: View {
     let entry: ActionMenuEntry
     let run: (@escaping ActionPerform) -> Void
 
@@ -568,7 +568,7 @@ struct ActionEntryView: View {
     }
 }
 
-struct ActionEntryList: View {
+private struct ActionEntryList: View {
     let entries: [ActionMenuEntry]
     let run: (@escaping ActionPerform) -> Void
 
