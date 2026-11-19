@@ -16,9 +16,10 @@ public struct RootView: View {
                 .toolbar { LibraryToolbar(model: model) }
                 .navigationTitle(model.selectedTitle)
         }
-        // Search lives at the top of the sidebar (like Notes/Mail) so the toolbar has room for the
-        // Years/Months/Days/All Photos switch to sit centred over the photos.
+        // Search lives at the top of the sidebar (like Notes/Mail) so the toolbar stays clear around the
+        // Years/Months/Days/All Photos switch, which is centred in the window's title bar.
         .searchable(text: $model.query.searchText, placement: .sidebar, prompt: "Search")
+        .background(TitlebarCenterAccessory(content: BrowseModePicker(model: model)))
         .inspector(isPresented: $model.showsActivityLog) {
             ActivityLogView(model: model)
                 .inspectorColumnWidth(min: 260, ideal: 340, max: 600)

@@ -8,13 +8,6 @@ struct LibraryToolbar: ToolbarContent {
     private static let columnRange = GridLayout.columnRange
 
     var body: some ToolbarContent {
-        ToolbarItem(placement: .principal) {
-            Picker("Browse", selection: $model.mode) {
-                ForEach(BrowseMode.allCases, id: \.self) { Text($0.title).tag($0) }
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-        }
         ToolbarItem {
             Slider(value: zoom, in: Double(Self.columnRange.lowerBound)...Double(Self.columnRange.upperBound), step: 1) {
                 Text("Zoom")
@@ -25,6 +18,7 @@ struct LibraryToolbar: ToolbarContent {
             }
             .labelsHidden()
             .frame(width: 200)
+            .padding(.horizontal, 8)  // room inside the toolbar's capsule around the magnifier icons
             .help("Zoom")
         }
         ToolbarItem { filterMenu }
@@ -94,3 +88,45 @@ struct LibraryToolbar: ToolbarContent {
     }
 }
 
+
+/// Years / Months / Days / All Photos. Shown centred in the window's title bar (see `TitlebarCenterAccessory`),
+/// not in the detail column's toolbar, so it sits in the middle of the window — under the notch when the
+/// window spans the screen — whatever the sidebar width. Drawn by hand in the toolbar's glass-capsule style,
+/// because outside the toolbar a system segmented control falls back to the classic blue look.
+struct BrowseModePicker: View {
+    @Bindable var model: AppModel
+
+    var body: some View {
+        HStack(spacing: 2) {
+            ForEach(BrowseMode.allCases, id: \.self) { mode in
+                let selected = model.mode == mode
+                Button {
+                    model.mode = mode
+                } label: {
+                    Text(mode.title)
+                        .font(.system(size: 14, weight: selected ? .semibold : .regular))
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 7)
+                        .background { if selected { Capsule().fill(.primary.opacity(0.14)) } }
+                        .contentShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .accessibilityAddTraits(selected ? .isSelected : [])
+            }
+        }
+        .padding(4)
+        .modifier(GlassCapsule())
+        .fixedSize()
+    }
+}
+
+/// Liquid Glass capsule on macOS 26+, a material capsule before that.
+private struct GlassCapsule: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(macOS 26.0, *) {
+            content.glassEffect(.regular, in: Capsule())
+        } else {
+            content.background(.regularMaterial, in: Capsule())
+        }
+    }
+}
