@@ -54,6 +54,25 @@ private func bag(_ tag: String, _ items: [String]) -> String {
         #expect(faces == PhotoMetadata(rating: 0, tags: ["birthday"], albums: [], isFavorite: false))
     }
 
+    @Test func readsPhotosTitleCaptionAndNamedFaces() throws {
+        let doc = try XMPDocument(data: fixture("osxphotos-title-regions"))
+        #expect(doc.title == "Birthday")
+        #expect(doc.caption == "Grandma's 80th, in the garden")
+        #expect(doc.faceRegions == [
+            .init(name: "Anna", x: 0.25, y: 0.4, width: 0.09, height: 0.12),
+            .init(name: "Tom Novák", x: 0.7, y: 0.35, width: 0.075, height: 0.1),
+        ])  // the unnamed face is left out
+        #expect(doc.regionImageSize == CGSize(width: 4032, height: 3024))
+        #expect(doc.metadata.tags.isEmpty && doc.metadata.isFavorite)  // people named aren't tags
+
+        // The attribute form other apps write.
+        let other = try XMPDocument(data: fixture("osxphotos-faces"))
+        #expect(other.faceRegions.map(\.name) == ["Person A", "Person B"] && other.faceRegions[1].x == 0.6)
+        #expect(other.title == nil && other.caption == nil && other.regionImageSize == nil)
+        let empty = try XMPDocument(data: xmp(description: "<dc:title><rdf:Alt><rdf:li xml:lang='x-default'/></rdf:Alt></dc:title>"))
+        #expect(empty.title == nil && empty.faceRegions.isEmpty)
+    }
+
     @Test func ignoresPlaceholderAlbumNames() throws {
         let m = try XMPDocument(data: xmp(description: bag("dc:subject", ["Albums|", "Albums|_", "Albums|Real"]))).metadata
         #expect(m.albums == ["Real"])

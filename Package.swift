@@ -32,7 +32,7 @@ let package = Package(
         .target(name: "COnnxRuntime"),
         .target(
             name: "LoupeFaces",
-            dependencies: ["LoupeCore", "LoupeMedia", "LoupeIndex", "COnnxRuntime", .product(name: "GRDB", package: "GRDB.swift")]
+            dependencies: ["LoupeCore", "LoupeXMP", "LoupeMedia", "LoupeIndex", "COnnxRuntime", .product(name: "GRDB", package: "GRDB.swift")]
         ),
         .target(
             name: "LoupeUI",

@@ -16,7 +16,7 @@ import Testing
         #expect(value("--directory") == ["{created.year}/{created.strftime,%Y-%m-%d}"])  // YYYY/YYYY-MM-DD
         #expect(value("--sidecar") == ["xmp"] && args.contains("--sidecar-drop-ext"))  // <stem>.xmp
         #expect(value("--edited-suffix") == ["-edited"])
-        #expect(value("--keyword-template") == ["{favorite?Favorite,}", "Albums|{album,}"])
+        #expect(value("--keyword-template") == ["{favorite?Favorite,}", "{photo.hidden?Hidden,}", "Albums|{album,}"])
         #expect(args.contains("--update"))  // a second run copies only what's new
         #expect(value("--exportdb") == ["/support/apple-photos-export.db"])  // kept out of the library
     }

@@ -13,6 +13,8 @@ struct Detection {
     var landmarks: [CGPoint] = []
     /// Pets: Vision's feature print of the animal, length 1.
     var vector: [Float] = []
+    /// The name the photo's sidecar gives this face (`SourceNames`).
+    var sourceName: String?
 }
 
 enum FaceDetector {

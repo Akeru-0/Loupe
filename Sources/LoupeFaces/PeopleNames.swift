@@ -24,6 +24,8 @@ public struct PeopleNames: Codable, Equatable, Sendable {
 
     public var people: [Person] = []
     public var pins: [Pin] = []
+    /// Names from Photos (a face's `sourceName`) renamed in People: the name they go by now, "" for no name.
+    public var renamed: [String: String] = [:]
 
     /// A person not named by the user but given an identity so corrections can point at them (moving a face to
     /// "Cat 2"): their name starts with this and is never shown.
@@ -43,6 +45,23 @@ public struct PeopleNames: Codable, Equatable, Sendable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         people = try c.decodeIfPresent([Person].self, forKey: .people) ?? []
         pins = try c.decodeIfPresent([Pin].self, forKey: .pins) ?? []  // written before corrections existed
+        renamed = try c.decodeIfPresent([String: String].self, forKey: .renamed) ?? [:]
+    }
+
+    /// The name a face named `source` in Photos goes by in People; nil when its name was removed.
+    public func resolve(_ source: String) -> String? {
+        var name = source
+        for _ in 0..<8 {  // renamed again and again; never loops for ever
+            guard let next = renamed[name] else { return name }
+            if next.isEmpty { return nil }
+            name = next
+        }
+        return name
+    }
+
+    /// People ▸ Rename (or Remove Name, `name` nil) of a person named in Photos.
+    mutating func rename(source: String, to name: String?) {
+        renamed[source] = name == source ? nil : (name ?? "")
     }
 
     /// The correction for a face, if one was made: `.some(nil)` is "nobody".

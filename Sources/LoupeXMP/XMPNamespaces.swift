@@ -9,4 +9,8 @@ enum XMPNamespaces {
     static let tiff = "http://ns.adobe.com/tiff/1.0/"
     /// IPTC Extension: `PersonInImage` (people named in the photo, as osxphotos and Photos exports write them).
     static let iptcExt = "http://iptc.org/std/Iptc4xmpExt/2008-02-29/"
+    /// Metadata Working Group regions: the named faces Photos exports (through osxphotos), with their areas.
+    static let mwgRegions = "http://www.metadataworkinggroup.com/schemas/regions/"
+    static let stArea = "http://ns.adobe.com/xmp/sType/Area#"
+    static let stDim = "http://ns.adobe.com/xap/1.0/sType/Dimensions#"
 }

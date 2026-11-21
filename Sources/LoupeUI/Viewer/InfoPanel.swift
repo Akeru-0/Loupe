@@ -2,11 +2,12 @@ import Foundation
 import LoupeCore
 import LoupeIndex
 import LoupeMedia
+import LoupeXMP
 import Observation
 import SwiftUI
 
-/// The (i) panel for one photo, laid out like Photos' Info window: file name, date and favorite; a card with the
-/// camera, lens, file facts and exposure; then rating, tags (opens the tag editor), albums and the file's path.
+/// The (i) panel for one photo, laid out like Photos' Info window: file name, date and favorite; the title and
+/// caption (as Photos gave them); a card with the camera, lens, file facts and exposure; then rating, tags (opens the tag editor), albums and the file's path.
 /// Used by the viewer and by the toolbar's Info popover. Everything is loaded off the main thread, again whenever
 /// the library changes.
 struct InfoPanel: View {
@@ -31,6 +32,16 @@ struct InfoPanel: View {
                 VStack(alignment: .leading, spacing: 0) {
                     header(content)
                     Divider()
+                    if content.title != nil || content.caption != nil {
+                        row {
+                            VStack(alignment: .leading, spacing: 4) {
+                                if let title = content.title { Text(title).fontWeight(.semibold) }
+                                if let caption = content.caption { Text(caption).foregroundStyle(.secondary) }
+                            }
+                            .textSelection(.enabled)
+                        }
+                        Divider()
+                    }
                     if content.version != nil {
                         cameraCard(content).padding(12)
                         Divider()
@@ -205,6 +216,9 @@ struct InfoPanel: View {
         var version: VersionRecord?
         var url: URL
         var exif: ExifSummary
+        /// The sidecar's title and caption.
+        var title: String?
+        var caption: String?
     }
 
     private(set) var content: Content?
@@ -228,8 +242,10 @@ struct InfoPanel: View {
             ?? versions.first(where: \.isDisplay) ?? versions.first
         guard !Task.isCancelled else { return nil }
         let url = version?.url(in: root) ?? root
+        let sidecar = (try? index.groupFiles(ofPhoto: id, root: root))?.sidecar
+            .flatMap { try? Data(contentsOf: $0) }.flatMap { try? XMPDocument(data: $0) }
         return Content(
             photo: photo, metadata: (try? index.metadata(ofPhoto: id)) ?? PhotoMetadata(), version: version, url: url,
-            exif: version == nil ? ExifSummary() : ExifSummary(url: url))
+            exif: version == nil ? ExifSummary() : ExifSummary(url: url), title: sidecar?.title, caption: sidecar?.caption)
     }
 }

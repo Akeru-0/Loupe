@@ -2,6 +2,7 @@ import CoreGraphics
 import Foundation
 import GRDB
 import LoupeCore
+import LoupeXMP
 import Testing
 @testable import LoupeFaces
 @testable import LoupeIndex
@@ -180,6 +181,65 @@ private func look(_ k: Int, noise: Float = 0) -> [Float] {
         let her = try #require(try index.faceGroups(minPhotos: 1).first { $0.photoCount == 3 })
         #expect(her.name.map { !PeopleNames.isShown($0) } == true)
         #expect(Set(try index.sections(for: PhotoQuery(scope: .faceGroup(her.id))).flatMap(\.photoIDs)) == [2, 3, 4])
+    }
+
+    @Test func photosRegionsNameTheFacesTheyMark() {
+        let boxes = [CGRect(x: 0.2, y: 0.33, width: 0.1, height: 0.13), CGRect(x: 0.66, y: 0.3, width: 0.08, height: 0.1),
+                     CGRect(x: 0.45, y: 0.7, width: 0.05, height: 0.06)]
+        let regions = [XMPDocument.FaceRegion(name: "Tom", x: 0.7, y: 0.35, width: 0.075, height: 0.1),
+                       XMPDocument.FaceRegion(name: "Anna", x: 0.25, y: 0.4, width: 0.09, height: 0.12),
+                       XMPDocument.FaceRegion(name: "Far away", x: 0.9, y: 0.9, width: 0.05, height: 0.05),
+                       XMPDocument.FaceRegion(name: "Too big", x: 0.47, y: 0.72, width: 0.4, height: 0.4)]
+        let image = CGSize(width: 4032, height: 3024)
+        #expect(SourceNames.match(boxes: boxes, regions: regions, regionImageSize: image, imageSize: image)
+                == ["Anna", "Tom", nil])
+        // Given for a photo of another shape (cropped, or turned in Loupe): not trusted.
+        #expect(SourceNames.match(boxes: boxes, regions: regions, regionImageSize: CGSize(width: 3024, height: 4032),
+                                  imageSize: image) == [nil, nil, nil])
+        // Two regions over one face: the closer one names it.
+        let two = [XMPDocument.FaceRegion(name: "Near", x: 0.25, y: 0.4, width: 0.1, height: 0.13),
+                   XMPDocument.FaceRegion(name: "Nearer", x: 0.251, y: 0.395, width: 0.1, height: 0.13)]
+        #expect(SourceNames.match(boxes: [boxes[0]], regions: two, regionImageSize: nil, imageSize: image) == ["Nearer"])
+    }
+
+    @Test func peopleNamedInPhotosAreNamedHereAndCanBeRenamedOrCorrected() async throws {
+        let index = try makeIndex()
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("loupe-faces-root-\(UUID().uuidString)")
+        try await index.dbPool.write { db in
+            for id in Int64(1)...5 {
+                var p = PhotoRecord(id: id, locationId: "L", folderPath: "", stem: "p\(id)", stemKey: "p\(id)", addedDate: Date())
+                try p.insert(db)
+            }
+            // Photos named her in photos 1 and 2. Photo 3 is her again, unnamed; photos 4 and 5 are someone else,
+            // though Photos (wrongly) named photo 5 Anna.
+            for (faceID, photo, v, source) in [(1, 1, look(1), "Anna"), (2, 2, look(2), "Anna"),
+                                               (3, 3, look(3), nil), (4, 4, vector(80), nil),
+                                               (5, 5, vector(80, jitter: 0.1), "Anna")] as [(Int64, Int64, [Float], String?)] {
+                try db.execute(
+                    sql: "INSERT INTO face(id, photoId, kind, x, y, w, h, embedding, sourceName) VALUES (?, ?, 'person', 0, 0, 0.1, 0.1, ?, ?)",
+                    arguments: [faceID, photo, Vectors.data(v), source])
+            }
+        }
+        try await FaceScanner.regroup(in: index, root: root)
+        let anna = try #require(try index.faceGroups(minPhotos: 1).first { $0.name == "Anna" })
+        #expect(Set(try index.sections(for: PhotoQuery(scope: .faceGroup(anna.id))).flatMap(\.photoIDs)) == [1, 2, 3, 5])
+        #expect(PeopleNames.load(root: root).people.isEmpty)  // the name lives in the photos, not people.json
+
+        // "Not Anna" for photo 5: the correction beats the photo's name.
+        _ = try await FaceScanner.move(photos: [5], from: anna.id, to: .nobody, index: index, root: root)
+        #expect(Set(try index.sections(for: PhotoQuery(scope: .faceGroup(anna.id))).flatMap(\.photoIDs)) == [1, 2, 3])
+
+        // Renamed in People: the faces Photos named go along, one person still.
+        try await FaceScanner.rename(group: anna.id, to: "Mom", index: index, root: root)
+        var named = try index.faceGroups(minPhotos: 1).filter { $0.name != nil }
+        #expect(named.map(\.name) == ["Mom"] && named[0].photoCount == 3)
+        try await FaceScanner.regroup(in: index, root: root)  // and stays so
+        named = try index.faceGroups(minPhotos: 1).filter { $0.name != nil }
+        #expect(named.map(\.name) == ["Mom"] && named[0].photoCount == 3)
+
+        // Remove Name: nobody is called Anna or Mom any more.
+        try await FaceScanner.rename(group: named[0].id, to: nil, index: index, root: root)
+        #expect(try index.faceGroups(minPhotos: 1).allSatisfy { $0.name == nil })
     }
 
     /// Runs the real model when it and ONNX Runtime are on this Mac (they are downloaded, not in the repo).

@@ -15,6 +15,26 @@ public struct XMPDocument {
     public let writerToolkit: String?
     /// Whether any description carries properties in the LightCraft `lc:` namespace (Loupe never writes those).
     public let hasLightCraftData: Bool
+    /// `dc:title` and `dc:description`: the title and caption given in Photos (or another app); nil when empty.
+    public let title: String?
+    public let caption: String?
+    /// The named faces (and pets) the sidecar marks, as Photos exports them: who, and where in the photo.
+    public let faceRegions: [FaceRegion]
+    /// The image size `faceRegions` were given for (turned as shown), when the sidecar says.
+    public let regionImageSize: CGSize?
+
+    /// A named region (`mwg-rs:RegionList` item): its centre and size, 0…1 of the shown image from the top left.
+    public struct FaceRegion: Equatable, Sendable {
+        public var name: String
+        public var x: Double
+        public var y: Double
+        public var width: Double
+        public var height: Double
+
+        public init(name: String, x: Double, y: Double, width: Double, height: Double) {
+            (self.name, self.x, self.y, self.width, self.height) = (name, x, y, width, height)
+        }
+    }
 
     public init(data: Data) throws {
         let doc: XMLDocument
@@ -36,6 +56,8 @@ public struct XMPDocument {
         var persons: [String] = []
         var hasEdits = false
         var hasLC = false
+        var title: String?
+        var caption: String?
 
         for d in descriptions {
             if (d.attributes ?? []).contains(where: { $0.uri == XMPNamespaces.lc }) { hasLC = true }
@@ -53,6 +75,10 @@ public struct XMPDocument {
                     hierarchical += Self.listItems(child)
                 } else if Self.isElement(child, XMPNamespaces.iptcExt, "PersonInImage") {
                     persons += Self.listItems(child)
+                } else if Self.isElement(child, XMPNamespaces.dc, "title") {
+                    title = title ?? Self.text(child)
+                } else if Self.isElement(child, XMPNamespaces.dc, "description") {
+                    caption = caption ?? Self.text(child)
                 } else if Self.isElement(child, XMPNamespaces.lc, "settings"),
                     !(child.stringValue ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 {
@@ -62,6 +88,9 @@ public struct XMPDocument {
         }
 
         hasLightCraftData = hasLC
+        self.title = title
+        self.caption = caption
+        (faceRegions, regionImageSize) = Self.regions(in: root)
         var albums: [String] = []
         var isFavorite = false
         var isHidden = false
@@ -137,6 +166,52 @@ public struct XMPDocument {
             return child.stringValue
         }
         return nil
+    }
+
+    /// A language alternative's text (`rdf:Alt`, the first non-empty item) or a plain value; nil when empty.
+    private static func text(_ property: XMLElement) -> String? {
+        let items = listItems(property)
+        let candidates = items.isEmpty ? [property.stringValue ?? ""] : items
+        return candidates.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.first { !$0.isEmpty }
+    }
+
+    /// A value given as an attribute of `element` or of one of its descendants, or as a descendant element.
+    private static func value(_ element: XMLElement, _ uri: String, _ local: String) -> String? {
+        for e in [element] + descendants(of: element) {
+            for attr in e.attributes ?? [] where attr.uri == uri && attr.localName == local { return attr.stringValue }
+            if e !== element, isElement(e, uri, local) { return e.stringValue }
+        }
+        return nil
+    }
+
+    /// The named regions of `mwg-rs:Regions` (unnamed faces, which Photos exports as `_UNKNOWN_`, are left out),
+    /// and the image size they apply to.
+    private static func regions(in root: XMLElement) -> ([FaceRegion], CGSize?) {
+        let all = descendants(of: root)
+        guard let list = all.first(where: { isElement($0, XMPNamespaces.mwgRegions, "RegionList") }) else { return ([], nil) }
+        var regions: [FaceRegion] = []
+        for item in descendants(of: list) where isElement(item, XMPNamespaces.rdf, "li") {
+            let name = (value(item, XMPNamespaces.mwgRegions, "Name") ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !name.isEmpty, name != "_UNKNOWN_",
+                let area = descendants(of: item).first(where: { isElement($0, XMPNamespaces.mwgRegions, "Area") })
+                    ?? (item.attributes?.contains { $0.uri == XMPNamespaces.stArea } == true ? item : nil),
+                (value(area, XMPNamespaces.stArea, "unit") ?? "normalized") == "normalized"
+            else { continue }
+            func number(_ local: String) -> Double? {
+                value(area, XMPNamespaces.stArea, local).flatMap { Double($0.trimmingCharacters(in: .whitespaces)) }
+            }
+            guard let x = number("x"), let y = number("y"), let w = number("w"), let h = number("h"), w > 0, h > 0
+            else { continue }
+            regions.append(FaceRegion(name: name, x: x, y: y, width: w, height: h))
+        }
+        var size: CGSize?
+        if let dims = all.first(where: { isElement($0, XMPNamespaces.mwgRegions, "AppliedToDimensions") }),
+            let w = value(dims, XMPNamespaces.stDim, "w").flatMap({ Double($0) }),
+            let h = value(dims, XMPNamespaces.stDim, "h").flatMap({ Double($0) }), w > 0, h > 0
+        {
+            size = CGSize(width: w, height: h)
+        }
+        return (regions, size)
     }
 
     /// The `rdf:li` texts of a Bag/Seq/Alt property, in order.

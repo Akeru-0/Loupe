@@ -4,6 +4,7 @@ import GRDB
 import LoupeCore
 import LoupeIndex
 import LoupeMedia
+import LoupeXMP
 
 /// Finds people and pets in the library's photos, on this Mac: each photo's shown file is scanned once (again when
 /// it changes or is turned), the faces and animals found are stored with their vectors, and then everything is
@@ -46,9 +47,12 @@ public actor FaceScanner {
                 try db.execute(sql: "DELETE FROM face WHERE photoId = ?", arguments: [photo.id])
                 for d in found {
                     try db.execute(
-                        sql: "INSERT INTO face(photoId, kind, x, y, w, h, embedding) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                        sql: """
+                            INSERT INTO face(photoId, kind, x, y, w, h, embedding, sourceName)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                            """,
                         arguments: [photo.id, d.kind, d.box.minX, d.box.minY, d.box.width, d.box.height,
-                                    Vectors.data(d.vector)])
+                                    Vectors.data(d.vector), d.sourceName])
                 }
                 try db.execute(
                     sql: """
@@ -68,15 +72,22 @@ public actor FaceScanner {
     /// People ▸ Rename: gives the group's faces `name` (nil removes the name it has), saves it with the library and
     /// regroups, so a group named like another joins it.
     public static func rename(group: Int64, to name: String?, index: LibraryIndex, root: URL) async throws {
-        let (kind, current, vectors) = try await index.dbPool.read { db -> (String?, String?, [[Float]]) in
+        let (kind, current, vectors, sourceNames) = try await index.dbPool.read { db -> (String?, String?, [[Float]], [String]) in
             let row = try Row.fetchOne(db, sql: "SELECT kind, name FROM face_group WHERE id = ?", arguments: [group])
             let vectors = try Data.fetchAll(db, sql: "SELECT embedding FROM face WHERE groupId = ?", arguments: [group])
                 .map(Vectors.floats)
-            return (row?["kind"], row?["name"], vectors)
+            let sourceNames = try String.fetchAll(
+                db, sql: "SELECT DISTINCT sourceName FROM face WHERE groupId = ? AND sourceName IS NOT NULL",
+                arguments: [group])
+            return (row?["kind"], row?["name"], vectors, sourceNames)
         }
         guard let kind else { return }
         var names = PeopleNames.load(root: root)
         let trimmed = name?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        // The names from Photos that gave the group its name follow the new one (or are dropped with it).
+        for source in sourceNames where current != nil && names.resolve(source) == current {
+            names.rename(source: source, to: trimmed.isEmpty ? nil : trimmed)
+        }
         if trimmed.isEmpty {
             if let current { names.forget(current, kind: kind) }
         } else {
@@ -155,6 +166,9 @@ public actor FaceScanner {
 
     struct Pending: Sendable {
         var id: Int64
+        /// The photo's folder and stem: its sidecar is `<folderPath>/<stem>.xmp`.
+        var folderPath: String = ""
+        var stem: String = ""
         var path: String
         var modified: Double
         var rotation: Int?
@@ -167,7 +181,7 @@ public actor FaceScanner {
             try Row.fetchAll(
                 db,
                 sql: """
-                    SELECT p.id, v.path, v.modified, p.rotation FROM photo p
+                    SELECT p.id, p.folderPath, p.stem, v.path, v.modified, p.rotation FROM photo p
                     JOIN version v ON v.photoId = p.id AND v.isDisplay = 1
                     LEFT JOIN face_scan s ON s.photoId = p.id
                     WHERE v.kind NOT IN ('video') AND NOT (p.folderPath = ? OR p.folderPath LIKE ? ESCAPE '\\')
@@ -176,7 +190,10 @@ public actor FaceScanner {
                     ORDER BY p.captureDate DESC
                     """,
                 arguments: [deleted, LibraryIndex.escapeLike(deleted) + "/%"]
-            ).map { Pending(id: $0["id"], path: $0["path"], modified: $0["modified"], rotation: $0["rotation"]) }
+            ).map {
+                Pending(id: $0["id"], folderPath: $0["folderPath"], stem: $0["stem"], path: $0["path"],
+                        modified: $0["modified"], rotation: $0["rotation"])
+            }
         }
     }
 
@@ -192,7 +209,17 @@ public actor FaceScanner {
             else { continue }
             found[i].vector = vector
         }
-        return found.filter { !$0.vector.isEmpty }
+        found = found.filter { !$0.vector.isEmpty }
+        // People named in Apple Photos: the sidecar marks where their faces are.
+        let sidecar = (photo.folderPath + "/" + photo.stem + ".xmp").split(separator: "/")
+            .reduce(root) { $0.appendingPathComponent(String($1)) }
+        if let data = try? Data(contentsOf: sidecar), let xmp = try? XMPDocument(data: data), !xmp.faceRegions.isEmpty {
+            let names = SourceNames.match(
+                boxes: found.map(\.box), regions: xmp.faceRegions, regionImageSize: xmp.regionImageSize,
+                imageSize: CGSize(width: image.width, height: image.height))
+            for i in found.indices { found[i].sourceName = names[i] }
+        }
+        return found
     }
 
     /// Groups every stored face again (named people first, `PeopleNames`) and rewrites `face_group`. Returns the
@@ -203,10 +230,12 @@ public actor FaceScanner {
         return try await index.dbPool.write { db in
             var faces: [FaceGrouping.Face] = []
             var photoOf: [Int64: Int64] = [:]
-            for row in try Row.fetchAll(db, sql: "SELECT id, photoId, kind, w * h AS size, embedding FROM face") {
+            for row in try Row.fetchAll(db, sql: "SELECT id, photoId, kind, w * h AS size, embedding, sourceName FROM face") {
                 let id: Int64 = row["id"]
                 photoOf[id] = row["photoId"]
-                faces.append(FaceGrouping.Face(id: id, kind: row["kind"], vector: Vectors.floats(row["embedding"]), size: row["size"]))
+                faces.append(FaceGrouping.Face(
+                    id: id, kind: row["kind"], vector: Vectors.floats(row["embedding"]), size: row["size"],
+                    sourceName: row["sourceName"]))
             }
             let (groups, groupNames) = FaceGrouping.group(faces, names: names)
             try db.execute(sql: "DELETE FROM face_group")

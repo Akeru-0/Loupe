@@ -1,7 +1,8 @@
 import Foundation
 
-/// Groups faces of one person (or one pet) by their vectors. Named people (`PeopleNames`) come first: a face alike
-/// enough to a name's vector joins that name's group. The rest go biggest face first, each joining the group whose
+/// Groups faces of one person (or one pet) by their vectors. Named people come first: a face corrected by hand goes
+/// where it was put, a face its photo names (Apple Photos' people, `sourceName`) goes to that person, and a face alike
+/// enough to a named person (`PeopleNames`, and the faces Photos named) joins them. The rest go biggest face first, each joining the group whose
 /// average vector is most alike if it is alike enough, else starting a new one. A group's id is its lowest face id,
 /// so a person keeps their id as photos are added.
 enum FaceGrouping {
@@ -11,6 +12,8 @@ enum FaceGrouping {
         var vector: [Float]
         /// Area of the face in the photo (0…1): bigger faces are clearer, so they seed the groups.
         var size: Double
+        /// The name the photo's sidecar gives the face (Apple Photos).
+        var sourceName: String? = nil
     }
 
     /// How alike a face must be to a group's average: SFace's own same-person threshold is 0.363 for two faces;
@@ -29,30 +32,52 @@ enum FaceGrouping {
         var result: [Int64: Int64] = [:]
         var named: [Int64: String] = [:]
         for kind in Set(faces.map(\.kind)) {
-            var sums: [[Float]] = []
-            var members: [[Int64]] = []
             var rest: [Face] = []
-            // Named people first: their groups are seeded by the name's vector.
-            let people = names.people.filter { $0.kind == kind }
-            var byName = [[Int64]](repeating: [], count: people.count)
+            // Named people first: their groups are seeded by the name's vector, and by the faces Photos named.
+            var byName: [String: [Int64]] = [:]
+            var seedSums: [String: [Float]] = [:]
+            var order: [String] = []
+            func add(_ vector: [Float], weight: Float, to name: String) {
+                if seedSums[name] == nil { order.append(name) }
+                var sum = seedSums[name] ?? [Float](repeating: 0, count: vector.count)
+                for j in sum.indices where j < vector.count { sum[j] += vector[j] * weight }
+                seedSums[name] = sum
+            }
+            for person in names.people where person.kind == kind { add(person.vector, weight: Float(person.faces), to: person.name) }
+            var unplaced: [Face] = []
+            var pinned: [(Face, String)] = []
             for face in faces where face.kind == kind {
                 // A face corrected by hand goes where it was put, or nowhere.
                 if let pin = names.pin(for: face.vector, kind: kind) {
-                    if let name = pin.name, let i = people.firstIndex(where: { $0.name == name }) { byName[i].append(face.id) }
+                    if let name = pin.name { pinned.append((face, name)) }
                     continue
                 }
-                let scores = people.map { Vectors.dot($0.vector, face.vector) }
+                if let source = face.sourceName, let name = names.resolve(source) {
+                    byName[name, default: []].append(face.id)
+                    add(face.vector, weight: 1, to: name)
+                } else {
+                    unplaced.append(face)
+                }
+            }
+            // A pin to a name nobody has any more (its name was removed) leaves the face out.
+            for (face, name) in pinned where seedSums[name] != nil { byName[name, default: []].append(face.id) }
+            let seeds = order.map { ($0, Vectors.normalized(seedSums[$0]!)) }
+            for face in unplaced {
+                let scores = seeds.map { Vectors.dot($0.1, face.vector) }
                 if let best = scores.indices.max(by: { scores[$0] < scores[$1] }), scores[best] >= nameThreshold(for: kind) {
-                    byName[best].append(face.id)
+                    byName[seeds[best].0, default: []].append(face.id)
                 } else {
                     rest.append(face)
                 }
             }
-            for (i, group) in byName.enumerated() where !group.isEmpty {
+            for name in order {
+                guard let group = byName[name], !group.isEmpty else { continue }
                 let id = group.min()!
                 for face in group { result[face] = id }
-                named[id] = people[i].name
+                named[id] = name
             }
+            var sums: [[Float]] = []
+            var members: [[Int64]] = []
             for face in rest.sorted(by: { ($0.size, -$0.id) > ($1.size, -$1.id) }) {
                 var best = -1, bestScore: Float = -2
                 for (i, sum) in sums.enumerated() {

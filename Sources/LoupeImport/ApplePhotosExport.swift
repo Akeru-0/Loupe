@@ -2,8 +2,8 @@ import Foundation
 
 /// Import from Apple Photos, done by `osxphotos export` (it reads the Photos library directly; Photos itself is never
 /// changed). Its output follows Loupe's conventions: dated `YYYY/YYYY-MM-DD` folders, originals with their RAW and
-/// `-edited` versions, `<stem>.xmp` sidecars with keywords, `Favorite`, albums as `Albums|<name>` and the people
-/// named in each photo. `--update` makes a second run copy only what's new or changed.
+/// `-edited` versions, `<stem>.xmp` sidecars with keywords, `Favorite`, `Hidden`, albums as `Albums|<name>`, the title
+/// and caption, and the people named in each photo with where their faces are (People takes those names). `--update` makes a second run copy only what's new or changed.
 public enum ApplePhotosExport {
     /// The Photos library macOS creates.
     public static var defaultLibrary: URL {
@@ -23,6 +23,7 @@ public enum ApplePhotosExport {
             "--sidecar", "xmp", "--sidecar-drop-ext",
             "--edited-suffix", "-edited",
             "--keyword-template", "{favorite?Favorite,}",
+            "--keyword-template", "{photo.hidden?Hidden,}",
             "--keyword-template", "Albums|{album,}",
             "--update", "--touch-file", "--exportdb", exportDB.path, "--retry", "3",
             "--no-progress", "--verbose",

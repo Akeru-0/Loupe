@@ -172,6 +172,10 @@ enum Schema {
             // The name given in People (from `.loupe/people.json`, set by each regrouping).
             try db.execute(sql: "ALTER TABLE face_group ADD COLUMN name TEXT")
         }
+        migrator.registerMigration("v11") { db in
+            // The name the photo's sidecar gives the face (people named in Apple Photos), set when it is scanned.
+            try db.execute(sql: "ALTER TABLE face ADD COLUMN sourceName TEXT")
+        }
         return migrator
     }
 
