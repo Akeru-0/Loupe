@@ -73,7 +73,7 @@ public enum LightCraftBridge {
     }
 
     /// Edit in LightCraft: imports the files it doesn't have yet (in place: nothing is copied or moved), selects
-    /// them and shows the first in the Detail view.
+    /// them all and shows the first (in Loupe's order) in the Detail view.
     public static func edit(_ files: [URL], control: LightCraftControl) throws {
         var ids = try ids(for: files, control: control)
         let missing = files.filter { ids[$0] == nil }
@@ -88,7 +88,7 @@ public enum LightCraftBridge {
         }
         let selected = files.compactMap { ids[$0] }
         guard !selected.isEmpty else { throw BridgeError.notImported(files) }
-        try control.execute("library.select", ["ids": selected])
+        try control.execute("library.select", ["ids": selected, "active": selected[0]])
         _ = try? control.request("ui.set", ["view": "detail"])
     }
 

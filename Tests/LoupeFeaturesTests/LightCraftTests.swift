@@ -125,7 +125,9 @@ extension String: @retroactive Error {}
         let imported = try #require(sent.first { $0.0 == "library.import" })
         #expect(imported.1["paths"] as? [String] == ["/Pictures/Trip/IMG_2.CR2"])
         #expect(imported.1["mode"] as? String == "add")  // in place: nothing copied or moved
-        #expect(sent.first { $0.0 == "library.select" }?.1["ids"] as? [Int] == [11, 12])
+        let select = try #require(sent.first { $0.0 == "library.select" })
+        #expect(select.1["ids"] as? [Int] == [11, 12])
+        #expect(select.1["active"] as? Int == 11)  // the first one is shown, not whichever LightCraft picks
         #expect(sent.last?.0 == "ui.set")
     }
 
