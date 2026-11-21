@@ -15,8 +15,8 @@ public enum LightCraftBridge {
         public var errorDescription: String? {
             switch self {
             case .runningWithoutControl:
-                "LightCraft is running without Loupe's connection. Quit LightCraft, then choose Edit in LightCraft "
-                    + "again: Loupe starts it connected."
+                "LightCraft is running without Loupe's connection and didn't quit. Quit LightCraft, then choose "
+                    + "Edit again: Loupe starts it connected."
             case .didNotStart: "LightCraft didn't start its control connection."
             case .notImported(let files):
                 "LightCraft didn't import \(files.map(\.lastPathComponent).joined(separator: ", "))."
@@ -26,11 +26,20 @@ public enum LightCraftBridge {
 
     // MARK: - Connecting
 
-    /// Connects to LightCraft, starting it with the control port when it isn't running.
+    /// Connects to LightCraft, starting it with the control port when it isn't running. When it runs without the
+    /// port (opened from the Dock or Finder), it is quit the normal way (it saves, and may ask about unsaved work) and
+    /// started again connected.
     public static func connect(app: URL, port: UInt16 = LightCraftControl.defaultPort) async throws -> LightCraftControl {
         if let control = await Task.detached(operation: { try? LightCraftControl(port: port) }).value { return control }
-        guard NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).isEmpty else {
-            throw BridgeError.runningWithoutControl
+        let running = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID)
+        if !running.isEmpty {
+            for app in running { app.terminate() }
+            var quit = false
+            for _ in 0..<40 {  // up to 20 s, time to answer a "save changes?" question
+                try await Task.sleep(for: .milliseconds(500))
+                if running.allSatisfy(\.isTerminated) { quit = true; break }
+            }
+            guard quit else { throw BridgeError.runningWithoutControl }
         }
         let configuration = NSWorkspace.OpenConfiguration()
         configuration.arguments = ["--control", String(port)]

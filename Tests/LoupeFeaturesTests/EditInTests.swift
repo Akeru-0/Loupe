@@ -15,10 +15,11 @@ final class InMemoryPreferences: PreferenceStore, @unchecked Sendable {
 
 @MainActor final class FakeContext: ActionContext {
     var logs: [String] = []
+    var presented: [String] = []
     var chosen: URL?
     func share(_ urls: [URL]) {}
     func log(_ message: String) { logs.append(message) }
-    func present(_ error: any Error) {}
+    func present(_ error: any Error) { presented.append(error.localizedDescription) }
     func chooseApplication() async -> URL? { chosen }
 }
 
@@ -136,7 +137,7 @@ final class Calls: @unchecked Sendable {
         #expect(calls.opened.isEmpty)
         #expect(calls.revealed == calls.lightCraft)
         #expect(calls.activated.map(\.path) == [lc.path])
-        #expect(ctx.logs.count == 1 && ctx.logs[0].contains("running without Loupe's connection"))
+        #expect(ctx.presented.count == 1 && ctx.presented[0].contains("running without Loupe's connection"))
     }
 
     @Test func noDefaultChoosesSavesAndOpens() async throws {

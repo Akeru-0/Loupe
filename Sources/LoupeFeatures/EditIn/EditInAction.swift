@@ -46,6 +46,19 @@ public struct EditInAction: PhotoAction {
         )
     }
 
+    /// Shown when LightCraft couldn't be driven (the files are shown in Finder instead).
+    public enum EditError: LocalizedError {
+        case lightCraft(any Error)
+
+        public var errorDescription: String? {
+            switch self {
+            case .lightCraft(let error):
+                "Couldn't open the photo in LightCraft. \(error.localizedDescription) "
+                    + "The file is selected in Finder: drag it into LightCraft instead."
+            }
+        }
+    }
+
     public let id = "edit-in"
     private let appsForFile: @Sendable (URL) -> [URL]
     private let hooks: Hooks
@@ -83,8 +96,7 @@ public struct EditInAction: PhotoAction {
                 } catch {
                     hooks.revealFiles(lightCraftFiles)
                     try await hooks.activateApp(app)
-                    context.log("Couldn't open in LightCraft: \(error.localizedDescription) "
-                        + "Drag the selected file into LightCraft instead.")
+                    context.present(EditError.lightCraft(error))
                 }
             } else {
                 try await hooks.openFiles(files, app)
