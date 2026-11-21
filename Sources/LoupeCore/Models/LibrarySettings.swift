@@ -23,6 +23,9 @@ public struct LibrarySettings: Codable, Equatable, Sendable {
     /// Deleted.
     public static let recentlyDeletedFolderName = "Recently Deleted"
     public static let recentlyDeletedDays = 30
+    /// A copy of every favorite photo, kept by Loupe (`FavoritesFolder`) so editors can open them all. Never
+    /// indexed (the copies would be photos twice), not an album. Only this folder at the top of the library.
+    public static let favoritesFolderName = "Favorites"
 
     public static func standard() -> LibrarySettings {
         LibrarySettings(rootPath: (NSHomeDirectory() as NSString).appendingPathComponent("Pictures"))

@@ -112,6 +112,10 @@ public struct SidebarGroup: Identifiable, Sendable {
     var uploadStatus: CloudUploadStatus = .off
     @ObservationIgnored var uploadTask: Task<Void, Never>?
     @ObservationIgnored var uploadPending = false
+    /// The Favorites folder's sync (FavoritesFolderSync.swift).
+    @ObservationIgnored var favoritesTask: Task<Void, Never>?
+    @ObservationIgnored var favoritesPending = false
+    @ObservationIgnored var favoritesWatcher: FolderWatcher?
     /// Hidden and Recently Deleted were unlocked (LockedAlbums.swift), until `unlockDuration` has passed.
     var isUnlocked = false { didSet { if isUnlocked != oldValue { unlockChanged() } } }
     /// How long an unlock lasts (tests shorten it).
@@ -262,6 +266,7 @@ public struct SidebarGroup: Identifiable, Sendable {
             MainActor.assumeIsolated {
                 self?.scheduleUpload()  // new and changed files go up
                 self?.scheduleFaceScan()  // and are scanned for faces
+                self?.scheduleFavoritesSync()  // favorites changed, or their files
             }
         })
         observers.append(center.addObserver(forName: Library.didLog, object: nil, queue: .main) { [weak self] note in
@@ -317,6 +322,7 @@ public struct SidebarGroup: Identifiable, Sendable {
         queryTask?.cancel()
         cancelUpload()
         cancelFaceScan()
+        stopFavoritesSync()
         library = nil
         photoSections = []
         slideshow?.end(handoff: false)
@@ -364,6 +370,8 @@ public struct SidebarGroup: Identifiable, Sendable {
             isScanning = false
             scheduleUpload()
             scheduleFaceScan()
+            watchFavoritesFolder()
+            scheduleFavoritesSync()
             refreshFaceGroups()
             log(String(
                 format: "Scan finished in %.1f s: %d added, %d updated, %d removed, %d unreadable",

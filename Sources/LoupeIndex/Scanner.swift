@@ -95,6 +95,7 @@ public final class Scanner: Sendable {
     }
 
     func isIgnored(_ components: [String], under root: URL) -> Bool {
+        if let top = components.first, Self.isFavoritesFolder(top) { return true }
         var url = root
         for name in components {
             url.appendPathComponent(name)
@@ -105,7 +106,15 @@ public final class Scanner: Sendable {
 
     /// True for a folder the scanner never enters: hidden, a package, or named in `settings.excludedFolderNames`.
     public static func ignores(folder url: URL, settings: LibrarySettings) -> Bool {
-        isIgnoredFolder(url, excludedNames: Set(settings.excludedFolderNames.map(PhotoGrouper.stemKey)))
+        let atTop = url.deletingLastPathComponent().standardizedFileURL.path
+            == URL(fileURLWithPath: settings.rootPath, isDirectory: true).standardizedFileURL.path
+        return (atTop && isFavoritesFolder(url.lastPathComponent))
+            || isIgnoredFolder(url, excludedNames: Set(settings.excludedFolderNames.map(PhotoGrouper.stemKey)))
+    }
+
+    /// The Favorites folder Loupe keeps (`FavoritesFolder`), when it's at the top of the library.
+    static func isFavoritesFolder(_ name: String) -> Bool {
+        PhotoGrouper.stemKey(name) == PhotoGrouper.stemKey(LibrarySettings.favoritesFolderName)
     }
 
     private static func isIgnoredFolder(_ url: URL, excludedNames: Set<String>) -> Bool {
@@ -210,6 +219,7 @@ public final class Scanner: Sendable {
             guard let v = try? url.resourceValues(forKeys: Set(keys)) else { continue }
             if v.isDirectory == true {
                 if excluded.contains(PhotoGrouper.stemKey(url.lastPathComponent))
+                    || (isFavoritesFolder(url.lastPathComponent) && folderKey(of: url.deletingLastPathComponent(), root: root).isEmpty)
                     || v.isPackage == true || packageExtensions.contains(url.pathExtension.lowercased())
                 {
                     enumerator.skipDescendants()
