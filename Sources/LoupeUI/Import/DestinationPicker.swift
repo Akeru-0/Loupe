@@ -2,19 +2,17 @@ import AppKit
 import LoupeIndex
 import SwiftUI
 
-/// Where the import goes: Unsorted, an album from the album tree, or New Album… (a name and an optional group,
-/// which defaults to the current year: `2026/<name>`).
+/// Where the import goes: Photos (the default, a folder at the top of the library), Unsorted (loose at the top), an
+/// album from the album tree, or New Album… (a name and an optional group, which defaults to the current year:
+/// `2026/<name>`).
 struct DestinationPicker: View {
     var model: AppModel
     var importModel: ImportModel
 
     var body: some View {
         Menu {
-            Button {
-                importModel.destination = .unsorted
-            } label: {
-                if importModel.destination == .unsorted { Label("Unsorted", systemImage: "checkmark") } else { Text("Unsorted") }
-            }
+            choose("Photos", .photos)
+            choose("Unsorted", .unsorted)
             let albums = model.sidebar.first { $0.id == "albums" }?.items ?? []
             if !albums.isEmpty {
                 Divider()
@@ -31,9 +29,18 @@ struct DestinationPicker: View {
 
     private var title: String {
         switch importModel.destination {
+        case .photos: return "Photos"
         case .unsorted: return "Unsorted"
         case .album(let path): return Self.display(path)
         case .newAlbum: return "New Album “\(Self.display(importModel.destination.folder))”"
+        }
+    }
+
+    private func choose(_ title: String, _ destination: ImportDestination) -> some View {
+        Button {
+            importModel.destination = destination
+        } label: {
+            if importModel.destination == destination { Label(title, systemImage: "checkmark") } else { Text(title) }
         }
     }
 

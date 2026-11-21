@@ -20,8 +20,8 @@ import Testing
                 if side * GridLayout.spacingRatio >= 3 { #expect(abs(gap - side * GridLayout.spacingRatio) <= 1) }
             }
         }
-        // 1200 pt wide, 10 columns → ~110 pt tiles with ~9 pt gaps; zooming out narrows the gap
-        #expect(GridLayout.metrics(containerWidth: 1200, columns: 10).spacing == 9)
+        // 1200 pt wide, 10 columns → ~115 pt tiles with ~5 pt gaps; zooming out narrows the gap
+        #expect(GridLayout.metrics(containerWidth: 1200, columns: 10).spacing == 5)
         #expect(GridLayout.metrics(containerWidth: 1200, columns: 3).spacing >
                 GridLayout.metrics(containerWidth: 1200, columns: 15).spacing)
     }

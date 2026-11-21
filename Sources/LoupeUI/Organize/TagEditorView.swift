@@ -34,7 +34,7 @@ struct TagToken: Hashable, Identifiable {
     /// "Favorite" and album keywords mean something else in the sidecar, so they can't be tags; nor can a name
     /// with `|`, which is a keyword path separator there.
     static func isValidTag(_ name: String) -> Bool {
-        !name.isEmpty && name != Keywords.favorite && name != "Albums" && !name.hasPrefix(Keywords.albumPrefix)
+        !name.isEmpty && name != Keywords.favorite && name != Keywords.hidden && name != "Albums" && !name.hasPrefix(Keywords.albumPrefix)
             && !name.contains("|")
     }
 

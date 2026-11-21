@@ -57,25 +57,89 @@ public struct SidebarGroup: Identifiable, Sendable {
     public private(set) var settings: LibrarySettings
     public let rootOverride: String?
 
-    public var selectedItemID: String? = "library" { didSet { selectedItemChanged() } }
+    public var selectedItemID: String? = "library" {
+        didSet {
+            if !isGoingBack, let oldValue, oldValue != selectedItemID { backStack.append(oldValue) }
+            if selectedItemID != restoringSession?.item { restoringSession = nil }  // the user moved on
+            if selectedItemID != oldValue {
+                unlockDeclined = false  // opening a locked view asks again
+                openedFaceGroup = nil  // a person opened from People closes with it
+            }
+            selectedItemChanged()
+            saveSession()
+        }
+    }
+    /// Sidebar items shown before the current one, most recent last, for the toolbar's back button.
+    private var backStack: [String] = []
+    private var isGoingBack = false
     public var query = PhotoQuery() { didSet { if query != oldValue { observeQuery() } } }
     public var selection: Set<Int64> = [] { didSet { if selection != oldValue { reloadActionBar() } } }
     /// The photo the viewer shows. Close the viewer with `closeViewer()`; setting nil directly is a reset.
     public var viewerPhotoID: Int64? {
         didSet {
             closedViewerPhotoID = nil
-            if viewerPhotoID != oldValue { reloadActionBar() }
+            if viewerPhotoID != oldValue {
+                reloadActionBar()
+                saveSession()
+            }
         }
     }
+    /// The tile the viewer opens from, set by the grid just before it opens the viewer and taken by the viewer.
+    @ObservationIgnored var viewerOpening: ViewerFlight?
+    /// The photo flying back to its tile after the viewer closed itself (`ViewerLanding`).
+    var viewerClosing: ViewerFlight?
+    /// The open viewer's photo as drawn, for that flight back (set by the viewer while it is shown).
+    @ObservationIgnored var viewerSnapshot: (@MainActor () -> ViewerFlight?)?
     /// The version the viewer focuses (set by the viewer); Share in the toolbar shares it.
     var viewerFocusedVersion: VersionRecord?
+    /// The record of the photo the viewer shows (set by the viewer), for the title bar's date heading.
+    var viewerPhoto: PhotoRecord?
+    /// Settings ▸ Import ▸ Import from Apple Photos, and Settings ▸ Faces' downloadable recognition model.
+    @ObservationIgnored private(set) lazy var applePhotosImport = ApplePhotosImport(supportDirectory: supportDirectory)
+    @ObservationIgnored private(set) lazy var faceModel = FaceRecognitionModel(supportDirectory: supportDirectory)
+    /// Face recognition (FaceScanning.swift).
+    var faceScanStatus: FaceScanStatus = .unavailable
+    /// The people and pets People shows, and the one opened from it (its photos are shown).
+    var faceGroups: [LibraryIndex.FaceGroup] = []
+    var openedFaceGroup: Int64?
+    var runtimeInstall: RuntimeInstall = .idle
+    @ObservationIgnored var faceScanTask: Task<Void, Never>?
+    @ObservationIgnored var faceScanPending = false
+    /// Cloud upload (CloudUpload.swift): the synced folder per library root, and what the upload is doing.
+    var uploadFoldersByRoot: [String: String] = [:]
+    var uploadStatus: CloudUploadStatus = .off
+    @ObservationIgnored var uploadTask: Task<Void, Never>?
+    @ObservationIgnored var uploadPending = false
+    /// Hidden and Recently Deleted were unlocked (LockedAlbums.swift), until `unlockDuration` has passed.
+    var isUnlocked = false { didSet { if isUnlocked != oldValue { unlockChanged() } } }
+    /// How long an unlock lasts (tests shorten it).
+    @ObservationIgnored var unlockDuration: Duration = .seconds(15 * 60)
+    /// When the current unlock ends, for the padlock's help.
+    var unlockExpiry: Date?
+    @ObservationIgnored var relockTask: Task<Void, Never>?
+    /// The unlock prompt was cancelled (or the user locked by hand): don't ask again by itself until another item.
+    @ObservationIgnored var unlockDeclined = false
+    @ObservationIgnored var isAuthenticating = false
+    /// The toolbar's Info popover is open (the grid's Get Info opens it too).
+    var showsInfo = false
+    /// A photo the grid selects and scrolls to once it shows it (Show in Library / Show in Album), then clears.
+    var pendingRevealID: Int64?
+    /// The months of the dated photos on screen in the grid (first and last, each the start of its month); nil when
+    /// none are. Set by the grid as it scrolls and zooms.
+    var visibleMonths: ClosedRange<Date>?
     public var mode: BrowseMode = .all {
         didSet {
             query.grouping = mode.grouping
             columns = GridLayout.defaultColumns(for: mode)
         }
     }
-    public var columns = 7
+    public var columns = 7 { didSet { if columns != oldValue { saveSession() } } }
+    /// What was on screen when the app last ran, until the restored view's photos are in (SessionRestore.swift).
+    @ObservationIgnored var restoringSession: Session?
+    /// The photo at the top of the grid, as the grid last reported it.
+    @ObservationIgnored var topPhotoID: Int64?
+    /// After launch: the photo the grid scrolls to the top once it shows it, then clears.
+    var pendingTopPhotoID: Int64?
     public var showsActivityLog = false
     public var alertMessage: String?
     /// The photos the tag editor (⌘T) is open for.
@@ -86,6 +150,17 @@ public struct SidebarGroup: Identifiable, Sendable {
     private(set) var slideshow: SlideshowController?
 
     public private(set) var sidebar: [SidebarGroup] = []
+    /// Pinned sidebar item ids per library root, and the sections' order by id (see SidebarArrangement.swift).
+    var pinnedByRoot: [String: [String]] = [:]
+    var sectionOrder: [String] = []
+    /// Per library root: the dragged order of the items under each section or album group (by its id), and the
+    /// icons chosen for albums (by item id).
+    var itemOrderByRoot: [String: [String: [String]]] = [:]
+    var iconsByRoot: [String: [String: String]] = [:]
+    /// The sidebar row (by its id) showing the icon picker.
+    var iconPickerItemID: String?
+    /// The section header being dragged in the sidebar, while it is.
+    @ObservationIgnored var draggedSectionID: String?
     public private(set) var photoSections: [PhotoSection] = []
     public private(set) var cameras: [String] = []
     public private(set) var lenses: [String] = []
@@ -93,6 +168,8 @@ public struct SidebarGroup: Identifiable, Sendable {
     public private(set) var log: [LogEntry] = []
     /// Mounted camera cards, shown under Devices.
     public private(set) var cards: [Card] = []
+    /// Ejectable drives that aren't camera cards, listed under Devices to eject (Devices.swift).
+    public private(set) var drives: [ExternalDrive] = []
     /// The import window of the selected card (it replaces the grid).
     private(set) var importModel: ImportModel?
     /// An import that keeps running after another sidebar item was selected.
@@ -100,7 +177,7 @@ public struct SidebarGroup: Identifiable, Sendable {
 
     /// The grid's thumbnail memory cache, so the viewer can show a thumbnail instantly.
     @ObservationIgnored var thumbnailLoader: ThumbnailLoader?
-    @ObservationIgnored private let preferences: any PreferenceStore
+    @ObservationIgnored let preferences: any PreferenceStore
     @ObservationIgnored private let supportDirectory: URL
     @ObservationIgnored private let cacheDirectory: URL
     /// Bumped whenever the library is replaced; late results for an older library are dropped.
@@ -109,7 +186,7 @@ public struct SidebarGroup: Identifiable, Sendable {
     @ObservationIgnored private var queryTask: Task<Void, Never>?
     @ObservationIgnored private var sidebarTask: Task<Void, Never>?
     @ObservationIgnored private var sidebarRefreshPending = false
-    @ObservationIgnored private var observers: [any NSObjectProtocol] = []
+    @ObservationIgnored var observers: [any NSObjectProtocol] = []
     /// Set by `closeViewer()` (and the slideshow ending), taken once by the grid; any other change of `viewerPhotoID`
     /// clears it.
     @ObservationIgnored private var closedViewerPhotoID: Int64?
@@ -130,6 +207,9 @@ public struct SidebarGroup: Identifiable, Sendable {
         self.supportDirectory = supportDirectory
         self.cacheDirectory = cacheDirectory
         settings = Self.loadSettings(from: preferences)
+        loadSidebarArrangement()
+        loadUploadFolders()
+        restoreSession()
     }
 
     /// The settings the library runs with.
@@ -141,13 +221,27 @@ public struct SidebarGroup: Identifiable, Sendable {
 
     public var photoCount: Int { photoSections.reduce(0) { $0 + $1.photoIDs.count } }
 
+    /// The viewer's photo's place in the current list, 1-based ("241 of 251"); nil when it isn't in it.
+    var viewerPosition: Int? {
+        guard let id = viewerPhotoID else { return nil }
+        var offset = 0
+        for section in photoSections {
+            if let i = section.photoIDs.firstIndex(of: id) { return offset + i + 1 }
+            offset += section.photoIDs.count
+        }
+        return nil
+    }
+
     public var scanStatus: String {
         let n = photoCount
         return isScanning ? "Scanning… \(n.formatted())" : (n == 1 ? "1 photo" : "\(n.formatted()) photos")
     }
 
     public var selectedTitle: String {
-        selectedItemID.flatMap(item(withID:))?.title ?? "Loupe"
+        if let opened = openedFaceGroup, let group = faceGroups.first(where: { $0.id == opened }) {
+            return faceGroupTitle(group)  // a person opened from People
+        }
+        return selectedItemID.flatMap(item(withID:))?.title ?? "Loupe"
     }
 
     // MARK: - Launch and library lifetime
@@ -159,6 +253,13 @@ public struct SidebarGroup: Identifiable, Sendable {
             try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         }
         let center = NotificationCenter.default
+        lockWhenScreenLocks()
+        observers.append(center.addObserver(forName: Library.didChange, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.scheduleUpload()  // new and changed files go up
+                self?.scheduleFaceScan()  // and are scanned for faces
+            }
+        })
         observers.append(center.addObserver(forName: Library.didLog, object: nil, queue: .main) { [weak self] note in
             let message = note.userInfo?["message"] as? String ?? "\(note)"
             MainActor.assumeIsolated { self?.log(message) }
@@ -210,6 +311,8 @@ public struct SidebarGroup: Identifiable, Sendable {
         let oldOpen = openTask
         oldOpen?.cancel()
         queryTask?.cancel()
+        cancelUpload()
+        cancelFaceScan()
         library = nil
         photoSections = []
         slideshow?.end(handoff: false)
@@ -255,6 +358,9 @@ public struct SidebarGroup: Identifiable, Sendable {
             let report = await lib.start()
             guard gen == generation else { return }
             isScanning = false
+            scheduleUpload()
+            scheduleFaceScan()
+            refreshFaceGroups()
             log(String(
                 format: "Scan finished in %.1f s: %d added, %d updated, %d removed, %d unreadable",
                 Date().timeIntervalSince(started), report.added, report.updated, report.removed, report.failed.count))
@@ -272,6 +378,7 @@ public struct SidebarGroup: Identifiable, Sendable {
                 for try await sections in stream {
                     guard !Task.isCancelled else { return }
                     self?.photoSections = sections
+                    self?.finishRestoringSession()
                 }
             } catch {
                 if !Task.isCancelled { self?.log("Could not load photos: \(error.localizedDescription)") }
@@ -285,8 +392,15 @@ public struct SidebarGroup: Identifiable, Sendable {
     /// it into view and takes the keyboard back. Resets (another sidebar item, a reopened library) don't do that.
     func closeViewer() {
         guard let id = viewerPhotoID else { return }
+        viewerClosing = viewerSnapshot?()
         viewerPhotoID = nil
         closedViewerPhotoID = id
+    }
+
+    /// The tile the viewer opens on `id` from, once.
+    func takeViewerOpening(for id: Int64?) -> ViewerFlight? {
+        defer { viewerOpening = nil }
+        return viewerOpening?.photoID == id ? viewerOpening : nil
     }
 
     /// Play: a full-screen slideshow of the targets if two or more are selected, otherwise of the whole query,
@@ -318,7 +432,41 @@ public struct SidebarGroup: Identifiable, Sendable {
         return closedViewerPhotoID
     }
 
+    /// Shows the sidebar item `itemID` with the photo selected and scrolled into view.
+    func reveal(_ id: Int64, in itemID: String) {
+        pendingRevealID = id
+        if selectedItemID != itemID { selectedItemID = itemID }
+    }
+
+    /// The toolbar's back button: closes the viewer, or else returns to the previous sidebar item that still exists.
+    var canGoBack: Bool { viewerPhotoID != nil || openedFaceGroup != nil || !backStack.isEmpty }
+
+    /// Shows `id` without recording the current item for Back (restoring the last session).
+    func select(withoutHistory id: String) {
+        isGoingBack = true
+        selectedItemID = id
+        isGoingBack = false
+    }
+
+    func goBack() {
+        if viewerPhotoID != nil { return closeViewer() }
+        if openedFaceGroup != nil { return closeFaceGroup() }  // a person: back to People
+        while let id = backStack.popLast() {
+            guard item(withID: id) != nil || card(forItemID: id) != nil else { continue }
+            isGoingBack = true
+            selectedItemID = id
+            isGoingBack = false
+            return
+        }
+    }
+
     private func selectedItemChanged() {
+        if let id = selectedItemID, drive(forItemID: id) != nil {  // nothing to browse: the drive's own view
+            selection = []
+            viewerPhotoID = nil
+            leaveImport()
+            return
+        }
         if let id = selectedItemID, let card = card(forItemID: id) {
             selection = []
             viewerPhotoID = nil
@@ -330,6 +478,7 @@ public struct SidebarGroup: Identifiable, Sendable {
         selection = []
         viewerPhotoID = nil
         query.select(item.scope)
+        if item.scope == .people { refreshFaceGroups() }
     }
 
     // MARK: - Sidebar
@@ -365,7 +514,10 @@ public struct SidebarGroup: Identifiable, Sendable {
                 for message in result.3 { log(message) }
                 if let id = selectedItemID, let item = item(withID: id) {
                     // A renamed or new album selected before it was listed, or an album that became a group.
-                    if card(forItemID: id) == nil, query.scope != item.scope { query.scope = item.scope }
+                    // (A person opened from People keeps their own view.)
+                    if card(forItemID: id) == nil, openedFaceGroup == nil, query.scope != item.scope {
+                        query.scope = item.scope
+                    }
                 } else if selectedItemID != nil, !sidebarRefreshPending {
                     selectedItemID = "library"
                 }
@@ -388,16 +540,26 @@ public struct SidebarGroup: Identifiable, Sendable {
         return find(sidebarGroups.flatMap(\.items))
     }
 
-    /// The sidebar as shown: the sections, with Devices (only while there are cards) after the top section.
+    /// The sidebar as shown: the sections, with Devices (only while there are cards) after the top section and Pinned
+    /// (once something is pinned) right above Media Types; sections and items in the order the user dragged them
+    /// into, albums with the icons chosen for them.
     var sidebarGroups: [SidebarGroup] {
         let devices = deviceCards.map {
             SidebarItem(id: Self.deviceItemID($0), title: $0.name, systemImage: "sdcard", scope: .all)
+        } + drives.map {
+            SidebarItem(id: Self.driveItemID($0), title: $0.name, systemImage: "externaldrive", scope: .all)
         }
-        guard !devices.isEmpty else { return sidebar }
         var groups = sidebar
-        let at = groups.first?.title == nil ? 1 : 0
-        groups.insert(SidebarGroup(id: "devices", title: "Devices", items: devices), at: min(at, groups.count))
-        return groups
+        if !devices.isEmpty {
+            let at = groups.first?.title == nil ? 1 : 0
+            groups.insert(SidebarGroup(id: "devices", title: "Devices", items: devices), at: min(at, groups.count))
+        }
+        groups = customized(groups)
+        if let pinned = pinnedGroup(from: groups) {
+            let at = groups.firstIndex { $0.id == "mediaTypes" } ?? min(1, groups.count)
+            groups.insert(pinned, at: at)
+        }
+        return Self.arranged(groups, order: sectionOrder)
     }
 
     // MARK: - Import
@@ -410,7 +572,13 @@ public struct SidebarGroup: Identifiable, Sendable {
         queue.maxConcurrentOperationCount = 1
         queue.qualityOfService = .userInitiated
         let publish: @Sendable ([Card]) -> Void = { [weak self] cards in
-            DispatchQueue.main.async { MainActor.assumeIsolated { self?.cardsChanged(cards) } }
+            let drives = ExternalDrives.current(excluding: cards)  // here, off the main thread
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    self?.drives = drives
+                    self?.cardsChanged(cards)
+                }
+            }
         }
         let detector = CardDetector(queue: queue, onChange: publish)
         detector.start()
@@ -427,7 +595,11 @@ public struct SidebarGroup: Identifiable, Sendable {
     }
 
     private func selectLibraryIfDeviceGone() {
-        if let id = selectedItemID, id.hasPrefix("device:"), card(forItemID: id) == nil { selectedItemID = "library" }
+        if let id = selectedItemID, id.hasPrefix("device:") || id.hasPrefix("drive:"),
+            card(forItemID: id) == nil, drive(forItemID: id) == nil
+        {
+            selectedItemID = "library"
+        }
     }
 
     /// The cards under Devices: the mounted ones, plus the shown one while it is still importing after removal.
@@ -501,18 +673,25 @@ public struct SidebarGroup: Identifiable, Sendable {
 
     /// Shows the album an import went into (`""`: Unsorted).
     func showImported(folder: String) {
-        selectedItemID = folder.isEmpty ? "unsorted" : "folder:" + folder.precomposedStringWithCanonicalMapping
+        selectedItemID = folder.isEmpty ? "unsorted"
+            : folder == LibrarySettings.photosFolderName ? "library"  // not an album: its photos show in Library
+            : "folder:" + folder.precomposedStringWithCanonicalMapping
     }
 
     /// Ejects the card off the main thread (it waits for the disk); errors are presented.
-    func eject(_ card: Card) {
-        let url = card.volumeURL
+    func eject(_ card: Card) { eject(volumeURL: card.volumeURL, name: card.name) }
+
+    /// Unmounts and ejects the volume off the main thread, so it's safe to unplug; errors (a file still open
+    /// elsewhere) are presented. Devices drops it when the unmount is noticed.
+    func eject(volumeURL url: URL, name: String) {
         Task {
             let result = await Task.detached(priority: .userInitiated) {
                 Result { try NSWorkspace.shared.unmountAndEjectDevice(at: url) }
             }.value
             if case .failure(let error) = result {
-                present(ImportUIError("Couldn't eject “\(card.name)”: \(error.localizedDescription)"))
+                present(ImportUIError("Couldn't eject “\(name)”: \(error.localizedDescription)"))
+            } else {
+                log("Ejected \(name)")
             }
         }
     }

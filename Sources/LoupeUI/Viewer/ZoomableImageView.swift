@@ -13,6 +13,7 @@ struct ZoomableImageView: NSViewRepresentable {
     func makeNSView(context: Context) -> ZoomScrollView {
         let view = ZoomScrollView()
         view.onZoomBeyondFit = { [weak viewer] in viewer?.requestFullResolution() }
+        view.contextMenu = { [weak viewer] in viewer?.contextMenu() }
         viewer.zoomView = view
         return view
     }
@@ -28,6 +29,8 @@ struct ZoomableImageView: NSViewRepresentable {
 final class ZoomScrollView: NSScrollView {
     /// Called when the magnification goes beyond fit, so a full-resolution image can be loaded.
     var onZoomBeyondFit: (() -> Void)?
+    /// The photo's context menu (the grid's), on a right-click.
+    var contextMenu: (() -> NSMenu?)?
 
     private let imageView = ImageLayerView()
     private var pixelSize = CGSize(width: 1, height: 1)
@@ -90,6 +93,8 @@ final class ZoomScrollView: NSScrollView {
         updateGeometry()
     }
 
+    override func menu(for event: NSEvent) -> NSMenu? { contextMenu?() }
+
     override func mouseDown(with event: NSEvent) {
         guard event.clickCount == 2 else { return super.mouseDown(with: event) }
         let fit = fitMagnification
@@ -100,6 +105,9 @@ final class ZoomScrollView: NSScrollView {
         }
         magnificationChanged()
     }
+
+    /// Where the image is drawn, for its flight back to the grid (`ViewerFlight`).
+    var imageFlightRect: CGRect? { imageView.flightRect(imageView.bounds) }
 
     /// ⌘+ / ⌘−: steps around the visible center.
     func zoom(by factor: CGFloat) {

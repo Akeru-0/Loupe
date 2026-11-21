@@ -29,7 +29,10 @@ import SwiftUI
 
     let app: AppModel
     private(set) var photoID: Int64?
-    private(set) var records: Records?
+    private(set) var records: Records? {
+        // While the next photo loads, the title bar keeps the previous date rather than flashing empty.
+        didSet { if let records { app.viewerPhoto = records.photo } }
+    }
     /// The photo is no longer in the index.
     private(set) var isMissing = false
     private(set) var focusedVersion: VersionRecord?
@@ -79,6 +82,7 @@ import SwiftUI
         fullImages = [:]
         records = nil
         photoID = nil
+        app.viewerPhoto = nil
     }
 
     func close() { app.closeViewer() }
@@ -379,18 +383,54 @@ import SwiftUI
         }
     }
 
+    /// The grid's context menu for the shown photo; Hide and Delete then move on to the next photo.
+    func contextMenu() -> NSMenu? {
+        guard let id = photoID, let records, let version = focusedVersion else { return nil }
+        return PhotoContextMenu.make(
+            ids: [id], photos: [records.photo], files: url(of: version).map { [$0] } ?? [],
+            actions: [actionEntries], model: app,
+            run: { [weak self] in self?.run($0) }, trash: { [weak self] in self?.trash() },
+            setHidden: { [weak self] hidden in self?.setHidden(hidden) })
+    }
+
+    /// Hides (or shows again) the shown photo; if it leaves the list, the next photo is shown.
+    func setHidden(_ hidden: Bool) {
+        guard let id = photoID, let library = app.library else { return }
+        let order = order()
+        Task { [weak self] in
+            let errors = await library.apply([.setHidden(hidden)], to: [id])
+            guard let self else { return }
+            if let error = errors[id] { return self.app.present(error) }
+            guard self.app.viewerPhotoID == id, (self.app.query.scope == .hidden) != hidden else { return }
+            self.moveOn(from: id, gone: [id], order: order)
+        }
+    }
+
+    private func moveOn(from id: Int64, gone: Set<Int64>, order: [Int64]) {
+        let i = order.firstIndex(of: id) ?? 0
+        let next = order[min(i + 1, order.count)...].first { !gone.contains($0) }
+            ?? order[..<min(i, order.count)].last { !gone.contains($0) }
+        if let next { app.viewerPhotoID = next } else { app.closeViewer() }
+    }
+
     /// The grid's confirmation and trash flow; afterwards the next photo (or the previous one) is shown.
     func trash() {
         guard let id = photoID, let library = app.library, let window else { return }
         let order = order()
         PhotoGridController.confirmTrash([id], library: library, window: window, model: app) { [weak self] trashed in
             guard let self, trashed.contains(id), self.app.viewerPhotoID == id else { return }
-            let gone = Set(trashed)
-            let i = order.firstIndex(of: id) ?? 0
-            let next = order[min(i + 1, order.count)...].first { !gone.contains($0) }
-                ?? order[..<min(i, order.count)].last { !gone.contains($0) }
-            if let next { self.app.viewerPhotoID = next } else { self.app.closeViewer() }
+            self.moveOn(from: id, gone: Set(trashed), order: order)
         }
+    }
+
+    /// The shown photo as the viewer draws it, for its flight back to the grid; without an image (a video, a photo
+    /// still loading) the viewer only fades.
+    func flightBack() -> ViewerFlight? {
+        guard ViewerFlight.isEnabled, let id = photoID else { return nil }
+        if isStill, let image, let rect = zoomView?.imageFlightRect {
+            return ViewerFlight(photoID: id, image: image, from: rect)
+        }
+        return ViewerFlight(photoID: id, image: nil, from: .zero)
     }
 
     func showInFinder() {
@@ -446,10 +486,21 @@ struct PhotoViewer: View {
     var model: AppModel
     // `@State` is a macro whose plugin ships only with Xcode; see SettingsView.
     private let viewer: State<PhotoViewerModel>
+    /// The photo flying in from its grid tile as the viewer opens; nil once it has landed (or without a tile).
+    private let flight: State<ViewerFlight?>
+    /// The viewer has faded in (at once under Reduce Motion).
+    private let isShown: State<Bool>
+    /// The photo area in global coordinates, where the flying photo lands.
+    private let contentFrame: State<CGRect?>
+    @Environment(\.displayScale) private var displayScale
 
     init(model: AppModel) {
         self.model = model
         viewer = State(initialValue: PhotoViewerModel(app: model))
+        let animated = ViewerFlight.isEnabled
+        flight = State(initialValue: animated ? model.takeViewerOpening(for: model.viewerPhotoID) : nil)
+        isShown = State(initialValue: !animated)
+        contentFrame = State(initialValue: nil)
     }
 
     var body: some View {
@@ -458,6 +509,11 @@ struct PhotoViewer: View {
             VStack(spacing: 0) {
                 ViewerContent(viewer: viewer)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .opacity(flight.wrappedValue == nil ? 1 : 0)
+                    .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: {
+                        contentFrame.wrappedValue = $0
+                        reveal()
+                    }
                 Divider()
                 ViewerBottomBar(viewer: viewer)
             }
@@ -468,11 +524,53 @@ struct PhotoViewer: View {
             }
         }
         .background(Color(nsColor: .windowBackgroundColor))
+        .opacity(isShown.wrappedValue ? 1 : 0)
+        .overlay {
+            if let flight = flight.wrappedValue, let image = flight.image {
+                let rect = isShown.wrappedValue ? landingRect(image) : flight.from
+                FlightImage(
+                    image: image, rect: rect,
+                    cornerRadius: isShown.wrappedValue ? 0 : PhotoCellView.cornerRadius(for: flight.from))
+            }
+        }
         .background(ViewerKeyCatcher(viewer: viewer))
-        .onAppear { viewer.start() }
+        .onAppear {
+            viewer.start()
+            // Weak: the model outlives the viewer and must not keep it alive.
+            model.viewerSnapshot = { [weak viewer = viewer] in viewer?.flightBack() }
+        }
+        .task {
+            // Normally the first geometry change reveals the viewer; this is a backstop.
+            try? await Task.sleep(for: .milliseconds(50))
+            reveal()
+        }
         .onChange(of: model.viewerPhotoID) { _, id in viewer.show(id) }
         .onChange(of: model.slideshow == nil) { _, ended in if !ended { viewer.player?.pause() } }  // no sound behind it
-        .onDisappear { viewer.stop() }
+        .onDisappear {
+            model.viewerSnapshot = nil
+            viewer.stop()
+        }
+    }
+
+    /// Fades the viewer in while the photo flies from its tile to where the viewer draws it.
+    private func reveal() {
+        guard !isShown.wrappedValue else { return }
+        withAnimation(ViewerFlight.animation) {
+            isShown.wrappedValue = true
+        } completion: {
+            flight.wrappedValue = nil
+        }
+    }
+
+    /// Where the viewer will draw the photo: at fit in the photo area. Until its size is known, the thumbnail's
+    /// shape stands in (without the 100 % limit).
+    private func landingRect(_ thumbnail: CGImage) -> CGRect {
+        guard let area = contentFrame.wrappedValue else { return flight.wrappedValue?.from ?? .zero }
+        let viewer = viewer.wrappedValue
+        if viewer.focusedVersion != nil { return ViewerFlight.fitRect(pixelSize: viewer.pixelSize, in: area, scale: displayScale) }
+        let huge = 1_000_000 / CGFloat(max(thumbnail.width, thumbnail.height, 1))
+        let size = CGSize(width: CGFloat(thumbnail.width) * huge, height: CGFloat(thumbnail.height) * huge)
+        return ViewerFlight.fitRect(pixelSize: size, in: area, scale: displayScale)
     }
 }
 

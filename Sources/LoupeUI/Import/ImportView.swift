@@ -6,7 +6,7 @@ import SwiftUI
 
 /// The import window for one card, shown instead of the grid while the card is selected under Devices: the card's
 /// photos (those already on the Mac dimmed and badged), the destination, Import All New / Import Selected, the
-/// progress and the summary. The card is only read.
+/// progress and the summary. The card is only read, unless "Delete from card after import" is on.
 struct ImportView: View {
     var model: AppModel
     var importModel: ImportModel
@@ -42,6 +42,11 @@ struct ImportView: View {
             }
             Spacer(minLength: 12)
             DestinationPicker(model: model, importModel: importModel)
+                .disabled(importModel.phase.isImporting)
+            Toggle("Delete from card after import", isOn: Bindable(importModel).deletesSources)
+                .toggleStyle(.checkbox)
+                .help("Deletes each photo from the card once its copy in the library is verified. "
+                    + "Photos that fail or are cancelled stay on the card.")
                 .disabled(importModel.phase.isImporting)
             Button("Import Selected") { importModel.importSelected() }
                 .disabled(!importModel.canImportSelected || model.isImporting)
@@ -120,7 +125,10 @@ struct ImportView: View {
                     .font(.callout)
                 Spacer(minLength: 12)
                 if !result.imported.isEmpty {
-                    Button(result.destinationFolder.isEmpty ? "Show Unsorted" : "Show Album") {
+                    Button(
+                        result.destinationFolder.isEmpty ? "Show Unsorted"
+                            : result.destinationFolder == LibrarySettings.photosFolderName ? "Show in Library" : "Show Album"
+                    ) {
                         model.showImported(folder: result.destinationFolder)
                     }
                 }

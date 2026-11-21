@@ -47,7 +47,9 @@ extension AppModel {
         let wasSelected = selectedItemID == item.id
         do {
             let new = try await library.renameFolder(path, to: name)
-            if wasSelected { selectedItemID = "folder:" + new.precomposedStringWithCanonicalMapping }
+            let newID = "folder:" + new.precomposedStringWithCanonicalMapping
+            renameArrangement(from: "folder:" + path, to: newID)
+            if wasSelected { selectedItemID = (item.id.hasPrefix(Self.pinnedPrefix) ? Self.pinnedPrefix : "") + newID }
         } catch {
             present(OrganizeError("Couldn't rename “\(item.title)”: \(error.localizedDescription)"))
         }
@@ -112,7 +114,7 @@ extension AppModel {
     }
 
     /// A name prompt as a sheet on the main window; nil if cancelled or empty.
-    private static func askName(title: String, message: String, button: String, initial: String) async -> String? {
+    static func askName(title: String, message: String, button: String, initial: String) async -> String? {
         guard let window = NSApp.keyWindow else { return nil }
         let alert = NSAlert()
         alert.messageText = title
@@ -134,14 +136,24 @@ struct OrganizeError: LocalizedError {
     init(_ message: String) { errorDescription = message }
 }
 
-/// The sidebar's context menu for one item: New Album… on Unsorted, groups and albums (inside it), Rename… on
-/// albums and groups, Delete Album… on albums.
+/// The sidebar's context menu for one item: Pin / Unpin; Change Icon… on albums and groups; New Album… on Unsorted, groups and albums (inside it),
+/// Rename… on albums and groups, Delete Album… on albums.
 struct SidebarItemMenu: View {
     let item: SidebarItem
     let model: AppModel
 
     var body: some View {
+        if model.isDevice(item) {
+            Button("Eject “\(item.title)”") { model.eject(item) }.disabled(!model.canEject(item))
+        }
+        if model.canPin(item) {
+            Button(model.isPinned(item) ? "Unpin" : "Pin") { model.togglePin(item) }
+        }
+        if model.canChangeIcon(item) {
+            Button("Change Icon…") { model.iconPickerItemID = item.id }  // the row shows the picker
+        }
         if let folder = item.albumFolder {
+            Divider()
             Button("New Album…") { Task { await model.newAlbum(in: folder, select: true) } }
             if !folder.isEmpty {
                 Button("Rename…") { Task { await model.renameAlbum(item) } }
@@ -177,11 +189,11 @@ struct SidebarDropDelegate: DropDelegate {
 }
 
 extension View {
-    /// The context menu and the drop target of a sidebar row (none for Library, Favorites, Recently Added, tags;
-    /// no drop on groups).
+    /// The context menu and the drop target of a sidebar row (no menu on devices; no drop on Library, Favorites,
+    /// Recently Added, tags or groups).
     @ViewBuilder func sidebarOrganizing(_ item: SidebarItem, model: AppModel) -> some View {
         let withMenu = Group {
-            if item.albumFolder != nil {
+            if model.canPin(item) || item.albumFolder != nil || model.isDevice(item) {
                 self.contextMenu { SidebarItemMenu(item: item, model: model) }
             } else {
                 self

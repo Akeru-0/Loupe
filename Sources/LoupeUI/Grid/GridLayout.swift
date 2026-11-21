@@ -8,7 +8,7 @@ public enum GridLayout {
 
     /// Gap between photos as a share of the tile's side, so the grid looks equally airy at every zoom level
     /// and window size.
-    public static let spacingRatio: CGFloat = 0.08
+    public static let spacingRatio: CGFloat = 0.04
 
     /// Tile side and gap for a row of `columns` tiles with a gap between tiles and at both side edges:
     /// `width = columns·side + (columns + 1)·gap`, `gap = spacingRatio·side` (rounded, at least 3 pt).

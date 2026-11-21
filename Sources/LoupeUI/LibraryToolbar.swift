@@ -3,29 +3,81 @@ import SwiftUI
 
 struct LibraryToolbar: ToolbarContent {
     @Bindable var model: AppModel
+    var width: Width
+
+    /// How much room the toolbar's trailing items have (left of them: the title, or the viewer's centred heading);
+    /// they collapse in steps as the window narrows.
+    enum Width {
+        /// The action buttons collapse into a menu, the zoom slider into − / + buttons.
+        case narrow
+        /// The zoom slider collapses into − / + buttons.
+        case medium
+        case wide
+
+        /// `room`: points left for the trailing items, up to the detail column's right edge. The thresholds are what
+        /// the items take: actions (~190) or their menu (~40), slider (~220) or buttons (~60), filter and sort
+        /// (~80), with the gaps between them and the window edge.
+        init(room: CGFloat) {
+            self = room >= 560 ? .wide : room >= 400 ? .medium : .narrow
+        }
+
+        /// What the fully collapsed toolbar takes; with less, the viewer's heading has to move aside.
+        static let minimumRoom: CGFloat = 256
+    }
 
     /// Grid columns the zoom slider spans; the slider runs the other way (right = fewer, larger photos).
     private static let columnRange = GridLayout.columnRange
 
     var body: some ToolbarContent {
-        ToolbarItem { ActionCapsule(model: model) }
+        if model.canGoBack {
+            ToolbarItem(placement: .navigation) {
+                Button { model.goBack() } label: { Label("Back", systemImage: "chevron.left") }
+                    .keyboardShortcut("[", modifiers: .command)
+                    .help(model.viewerPhotoID != nil ? "Back to the grid" : "Back")
+            }
+        }
+        ToolbarItem { ActionCapsule(model: model, isCollapsed: width == .narrow) }
         // Its own capsule: macOS 26 merges adjacent toolbar items into one.
         if #available(macOS 26.0, *) { ToolbarSpacer(.fixed) }
         ToolbarItem {
-            Slider(value: zoom, in: Double(Self.columnRange.lowerBound)...Double(Self.columnRange.upperBound), step: 1) {
-                Text("Zoom")
-            } minimumValueLabel: {
-                Image(systemName: "minus.magnifyingglass")
-            } maximumValueLabel: {
-                Image(systemName: "plus.magnifyingglass")
-            }
-            .labelsHidden()
-            .frame(width: 200)
-            .padding(.horizontal, 8)  // room inside the toolbar's capsule around the magnifier icons
-            .help("Zoom")
+            if width == .wide { zoomSlider } else { zoomButtons }
         }
         ToolbarItem { filterMenu }
         ToolbarItem { sortMenu }
+    }
+
+    private var zoomSlider: some View {
+        Slider(value: zoom, in: Double(Self.columnRange.lowerBound)...Double(Self.columnRange.upperBound), step: 1) {
+            Text("Zoom")
+        } minimumValueLabel: {
+            Image(systemName: "minus.magnifyingglass")
+        } maximumValueLabel: {
+            Image(systemName: "plus.magnifyingglass")
+        }
+        .labelsHidden()
+        .frame(width: 200)
+        .padding(.horizontal, 8)  // room inside the toolbar's capsule around the magnifier icons
+        .help("Zoom")
+    }
+
+    private var zoomButtons: some View {
+        HStack(spacing: 12) {
+            Button { model.columns += 1 } label: { zoomSymbol("minus.magnifyingglass") }
+                .help("Zoom Out")
+                .disabled(model.columns >= Self.columnRange.upperBound)
+            Button { model.columns -= 1 } label: { zoomSymbol("plus.magnifyingglass") }
+                .help("Zoom In")
+                .disabled(model.columns <= Self.columnRange.lowerBound)
+        }
+        .buttonStyle(.borderless)
+        .padding(.horizontal, 10)  // room inside the toolbar's capsule, as in the action capsule
+    }
+
+    private func zoomSymbol(_ name: String) -> some View {
+        Image(systemName: name)
+            .font(.system(size: 16, weight: .regular))
+            .frame(width: 24, height: 28)
+            .contentShape(Rectangle())
     }
 
     private var zoom: Binding<Double> {
@@ -95,44 +147,55 @@ struct LibraryToolbar: ToolbarContent {
 }
 
 
-/// Years / Months / Days / All Photos. Shown centred in the window's title bar (see `TitlebarCenterAccessory`),
-/// not in the detail column's toolbar, so it sits in the middle of the window — under the notch when the
-/// window spans the screen — whatever the sidebar width. Drawn by hand in the toolbar's glass-capsule style,
-/// because outside the toolbar a system segmented control falls back to the classic blue look.
-struct BrowseModePicker: View {
-    @Bindable var model: AppModel
+/// The toolbar subtitle under the title: "251 Photos · June – September 2026", the months being those of the photos
+/// on screen.
+func photosSubtitle(count: Int, months: ClosedRange<Date>?) -> String {
+    guard count > 0 else { return "" }
+    var parts = [count == 1 ? "1 Photo" : "\(count.formatted()) Photos"]
+    if let months {
+        let monthYear = Date.FormatStyle().month(.wide).year()
+        let (first, last) = (months.lowerBound, months.upperBound)
+        if first == last {
+            parts.append(first.formatted(monthYear))
+        } else if Calendar.current.isDate(first, equalTo: last, toGranularity: .year) {
+            parts.append("\(first.formatted(.dateTime.month(.wide))) – \(last.formatted(monthYear))")
+        } else {
+            parts.append("\(first.formatted(monthYear)) – \(last.formatted(monthYear))")
+        }
+    }
+    return parts.joined(separator: " · ")
+}
+
+/// The title bar's centre while the viewer is open: the photo's date and its place in the list. Placed by
+/// `TitlebarCenterAccessory` so it is centred in the window whatever the sidebar width.
+struct TitlebarCenter: View {
+    var model: AppModel
+
+    /// Half the heading's width plus a gap; the toolbar's trailing items keep right of it.
+    static let maxHalfWidth: CGFloat = 124
+    /// The heading's left edge stays right of this, clear of the traffic lights and the sidebar button.
+    static let minLeading: CGFloat = 124
 
     var body: some View {
-        HStack(spacing: 2) {
-            ForEach(BrowseMode.allCases, id: \.self) { mode in
-                let selected = model.mode == mode
-                Button {
-                    model.mode = mode
-                } label: {
-                    Text(mode.title)
-                        .font(.system(size: 14, weight: selected ? .semibold : .regular))
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 7)
-                        .background { if selected { Capsule().fill(.primary.opacity(0.14)) } }
-                        .contentShape(Capsule())
-                }
-                .buttonStyle(.plain)
-                .accessibilityAddTraits(selected ? .isSelected : [])
-            }
-        }
-        .padding(4)
-        .modifier(GlassCapsule())
-        .fixedSize()
+        if model.viewerPhotoID != nil { ViewerHeading(model: model) }
     }
 }
 
-/// Liquid Glass capsule on macOS 26+, a material capsule before that.
-private struct GlassCapsule: ViewModifier {
-    func body(content: Content) -> some View {
-        if #available(macOS 26.0, *) {
-            content.glassEffect(.regular, in: Capsule())
-        } else {
-            content.background(.regularMaterial, in: Capsule())
+/// "November 14, 2026 at 1:03:53 PM" over "241 of 251", as Photos titles its viewer.
+private struct ViewerHeading: View {
+    var model: AppModel
+
+    var body: some View {
+        let photo = model.viewerPhoto.flatMap { $0.id == model.viewerPhotoID ? $0 : nil }
+        VStack(spacing: 1) {
+            Text(photo.map { $0.captureDate?.formatted(date: .long, time: .standard) ?? $0.stem } ?? " ")
+                .font(.system(size: 13, weight: .semibold))
+            if let position = model.viewerPosition {
+                Text("\(position.formatted()) of \(model.photoCount.formatted())")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
         }
+        .fixedSize()
     }
 }

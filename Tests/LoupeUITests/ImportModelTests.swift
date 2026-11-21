@@ -66,11 +66,41 @@ private func engine(_ groups: [PhotoGroup], present: [PhotoGroup] = [], plans: P
         await model.importAllNew()?.value
         #expect(plans.plans.map { $0.groups.map(\.stem) } == [["IMG_1", "IMG_3"]])
         guard case .done(let result) = model.phase else { Issue.record("not done: \(model.phase)"); return }
-        #expect(result.imported == ["IMG_1.CR2", "IMG_3.CR2"])
+        #expect(result.imported == ["Photos/IMG_1.CR2", "Photos/IMG_3.CR2"])  // the default destination
         // What was just imported counts as on the Mac: a second Import All New has nothing to do.
         #expect(model.newGroups.isEmpty)
         #expect(model.importAllNew() == nil)
         #expect(plans.plans.count == 1)
+    }
+
+    @Test func deleteFromCardIsRememberedPassedOnAndDeletedPhotosLeaveTheListing() async throws {
+        let groups = [group("IMG_1"), group("IMG_2")]
+        let plans = Plans()
+        let preferences = Preferences()
+        let deleting = ImportEngine(
+            list: { _ in groups },
+            check: { _, _ in DuplicateReport(presentFiles: [], photosLibraryChecked: true) },
+            run: { plan, _ in
+                plans.append(plan)
+                // IMG_1 is imported and deleted; IMG_2 is imported but stays on the card.
+                var result = ImportResult(imported: ["IMG_1.CR2", "IMG_2.CR2"])
+                result.deletedSources = groups[0].allFiles
+                result.sourceDeleteFailures = [groups[1].allFiles[0]: CocoaError(.fileWriteNoPermission)]
+                return result
+            })
+        let model = ImportModel(card: card, engine: deleting, preferences: preferences)
+        #expect(!model.deletesSources)  // off by default
+        model.deletesSources = true
+        #expect(ImportModel(card: card, engine: deleting, preferences: preferences).deletesSources)
+
+        await model.load().value
+        await model.importAllNew()?.value
+        #expect(plans.plans.map(\.deleteSources) == [true])
+        #expect(model.groups.map(\.stem) == ["IMG_2"])
+        guard case .done(let result) = model.phase else { Issue.record("not done: \(model.phase)"); return }
+        #expect(ImportModel.summary(of: result)
+                == "2 files imported (1 deleted from the card), 1 couldn't be deleted from the card.")
+        #expect(ImportModel.failures(of: result).count == 1)
     }
 
     @Test func importSelectedTakesOnlyNewSelectedGroups() async throws {
@@ -102,6 +132,7 @@ private func engine(_ groups: [PhotoGroup], present: [PhotoGroup] = [], plans: P
         #expect(ImportDestination.newAlbum(name: " Iceland ", inGroup: nil).folder == "Iceland")
         #expect(ImportDestination.newAlbum(name: "Iceland", inGroup: " ").folder == "Iceland")
         #expect(ImportDestination.unsorted.folder == "")
+        #expect(ImportDestination.photos.folder == "Photos")
         #expect(ImportDestination.defaultGroup(for: Date(timeIntervalSince1970: 1_790_000_000)) == "2026")
     }
 
@@ -109,16 +140,18 @@ private func engine(_ groups: [PhotoGroup], present: [PhotoGroup] = [], plans: P
         let preferences = Preferences()
         let plans = Plans()
         let first = ImportModel(card: card, engine: engine([], plans: plans), preferences: preferences)
-        #expect(first.destination == .unsorted)
+        #expect(first.destination == .photos)  // the default
         first.destination = .album("2026/Iceland")
         #expect(preferences.string(forKey: "import.lastDestination") != nil)
 
         let second = ImportModel(card: card, engine: engine([], plans: plans), preferences: preferences)
         #expect(second.destination == .album("2026/Iceland"))
-        // An album that no longer exists falls back to Unsorted.
+        // An album that no longer exists falls back to Photos.
         let third = ImportModel(
             card: card, engine: engine([], plans: plans), preferences: preferences, albums: ["2025/Other"])
-        #expect(third.destination == .unsorted)
+        #expect(third.destination == .photos)
+        third.destination = .unsorted
+        #expect(ImportModel(card: card, engine: engine([], plans: plans), preferences: preferences).destination == .unsorted)
     }
 
     @Test func listingFailureIsReported() async throws {

@@ -36,6 +36,7 @@ import Observation
     private var anchorID: Int64?
     private var magnification: CGFloat = 0
     private var changeObserver: (any NSObjectProtocol)?
+    private var scrollObserver: (any NSObjectProtocol)?
 
     init(model: AppModel) {
         self.model = model
@@ -47,6 +48,7 @@ import Observation
 
     deinit {
         if let changeObserver { NotificationCenter.default.removeObserver(changeObserver) }
+        if let scrollObserver { NotificationCenter.default.removeObserver(scrollObserver) }
     }
 
     override func loadView() {
@@ -91,6 +93,13 @@ import Observation
             // Ratings, favorites, edits or versions may have changed without the sections changing.
             MainActor.assumeIsolated { self?.scheduleRefresh(full: true) }
         }
+        let clipView = (view as! NSScrollView).contentView
+        clipView.postsBoundsChangedNotifications = true
+        scrollObserver = NotificationCenter.default.addObserver(
+            forName: NSView.boundsDidChangeNotification, object: clipView, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.updateVisibleInfo() }
+        }
         observeModel()
         modelChanged()
     }
@@ -98,6 +107,53 @@ import Observation
     override func viewDidAppear() {
         super.viewDidAppear()
         view.window?.makeFirstResponder(collectionView)
+    }
+
+    override func viewDidLayout() {
+        super.viewDidLayout()
+        updateVisibleInfo()
+    }
+
+    override func viewDidDisappear() {
+        super.viewDidDisappear()
+        model.visibleMonths = nil
+    }
+
+    /// Tells the model the months of the dated photos on screen (the toolbar's subtitle) and the photo at the top
+    /// (remembered for the next launch).
+    private func updateVisibleInfo() {
+        let rect = collectionView.visibleRect
+        var first: Date?
+        var last: Date?
+        var top: IndexPath?
+        for attributes in collectionView.collectionViewLayout?.layoutAttributesForElements(in: rect) ?? []
+        where attributes.representedElementCategory == .item {
+            if let path = attributes.indexPath, attributes.frame.midY >= rect.minY, top.map({ path < $0 }) ?? true {
+                top = path
+            }
+            guard let path = attributes.indexPath, let section = section(at: path.section),
+                section.captureDates.indices.contains(path.item), let date = section.captureDates[path.item]
+            else { continue }
+            if first.map({ date < $0 }) ?? true { first = date }
+            if last.map({ date > $0 }) ?? true { last = date }
+        }
+        let calendar = Calendar.current
+        func month(_ date: Date) -> Date { calendar.dateInterval(of: .month, for: date)?.start ?? date }
+        var months: ClosedRange<Date>?
+        if let first, let last { months = month(first)...month(last) }
+        if model.visibleMonths != months { model.visibleMonths = months }
+        // Not before the remembered position is back, or the launch position would overwrite it.
+        if model.pendingTopPhotoID == nil, let top, let id = dataSource.itemIdentifier(for: top) { model.noteTopPhoto(id) }
+    }
+
+    /// After launch: scrolls the remembered photo to the top once the restored view shows it.
+    private func restorePendingTop() {
+        guard let id = model.pendingTopPhotoID, shownSections == model.photoSections,
+            let path = dataSource.indexPath(for: id)
+        else { return }
+        model.pendingTopPhotoID = nil
+        collectionView.layoutSubtreeIfNeeded()
+        collectionView.scrollToItems(at: [path], scrollPosition: .top)
     }
 
     // MARK: - Model sync
@@ -110,6 +166,8 @@ import Observation
             _ = model.selection
             _ = model.viewerPhotoID
             _ = model.slideshow  // its end hands the last shown photo over like the viewer's
+            _ = model.pendingRevealID
+            _ = model.pendingTopPhotoID
         } onChange: { [weak self] in
             // Called before the change is stored; read the new values on the next main-actor turn.
             Task { @MainActor in
@@ -141,7 +199,48 @@ import Observation
             model.selection = [id]
         }
         syncSelectionFromModel(prune: false)
-        if let id = closedViewerPhoto { revealAfterViewer(id) }
+        if let id = closedViewerPhoto {
+            revealAfterViewer(id)
+            aimViewerLanding(at: id)
+        }
+        revealPending()  // already showing the view it is in
+        restorePendingTop()
+    }
+
+    /// Opens the viewer on `id`, its photo flying in from the tile (hidden until the viewer covers it).
+    private func openViewer(_ id: Int64) {
+        if ViewerFlight.isEnabled, let path = dataSource.indexPath(for: id),
+            let cell = collectionView.item(at: path) as? PhotoCell, let image = cell.shownImage,
+            collectionView.visibleRect.intersects(cell.view.frame), let from = cell.view.flightRect(cell.photoFrame)
+        {
+            model.viewerOpening = ViewerFlight(photoID: id, image: image, from: from)
+            hideDuringFlight(cell)
+        }
+        model.viewerPhotoID = id
+    }
+
+    /// Aims the photo flying back from the closed viewer at its tile (scrolled into view by now), hiding the tile
+    /// until it lands.
+    private func aimViewerLanding(at id: Int64) {
+        guard var flight = model.viewerClosing, flight.photoID == id, !flight.isAimed else { return }
+        collectionView.layoutSubtreeIfNeeded()
+        if flight.image != nil, let path = dataSource.indexPath(for: id),
+            let frame = collectionView.layoutAttributesForItem(at: path)?.frame,
+            collectionView.visibleRect.intersects(frame)
+        {
+            let size = flight.image.map { CGSize(width: $0.width, height: $0.height) }
+            flight.to = collectionView.flightRect(PhotoCellView.photoRect(for: size, in: frame))
+            if let item = collectionView.item(at: path) { hideDuringFlight(item) }
+        }
+        flight.isAimed = true
+        model.viewerClosing = flight
+    }
+
+    private func hideDuringFlight(_ item: NSCollectionViewItem) {
+        item.view.alphaValue = 0
+        DispatchQueue.main.asyncAfter(deadline: .now() + ViewerFlight.duration) { [weak item] in
+            item?.view.alphaValue = 1
+        }
     }
 
     /// The viewer closed on `id` (selected by now): scroll it into view and take the keyboard back.
@@ -211,6 +310,19 @@ import Observation
         shownSections = sections
         dataSource.apply(snapshot, animatingDifferences: false)
         syncSelectionFromModel(prune: sections == model.photoSections)
+        revealPending()
+        restorePendingTop()
+        DispatchQueue.main.async { [weak self] in self?.updateVisibleInfo() }  // once the new items are laid out
+    }
+
+    /// Show in Library / Show in Album: once the new view's photos are shown, selects the photo and scrolls to it.
+    private func revealPending() {
+        guard let id = model.pendingRevealID, shownSections == model.photoSections, dataSource.indexPath(for: id) != nil
+        else { return }
+        model.pendingRevealID = nil
+        model.selection = [id]
+        syncSelectionFromModel(prune: false)
+        revealAfterViewer(id)
     }
 
     private func reconfigureVisible(_ ids: Set<Int64>) {
@@ -348,14 +460,14 @@ import Observation
     func doubleClicked(_ event: NSEvent) {
         let point = collectionView.convert(event.locationInWindow, from: nil)
         guard let path = collectionView.indexPathForItem(at: point), let id = dataSource.itemIdentifier(for: path) else { return }
-        model.viewerPhotoID = id
+        openViewer(id)
     }
 
     private func toggleViewer() {
         if model.viewerPhotoID != nil {
             model.closeViewer()
         } else if let id = focusID.flatMap({ model.selection.contains($0) ? $0 : nil }) ?? orderedSelection().first {
-            model.viewerPhotoID = id
+            openViewer(id)
         }
     }
 
@@ -400,8 +512,9 @@ import Observation
         Self.confirmTrash(ids, library: library, window: window, model: model)
     }
 
-    /// Asks (as a sheet on `window`) before moving `ids` with all their files to the Trash, then trashes them and
-    /// presents per-photo errors. `completion` gets the ids that were trashed. Shared with the viewer.
+    /// Asks (as a sheet on `window`) before deleting `ids` with all their files, then deletes them and presents
+    /// per-photo errors. Photos go to Recently Deleted; ones already there go to the Trash for good. `completion`
+    /// gets the ids that were deleted. Shared with the viewer.
     static func confirmTrash(
         _ ids: [Int64], library: Library, window: NSWindow, model: AppModel,
         completion: @escaping @MainActor ([Int64]) -> Void = { _ in }
@@ -422,24 +535,29 @@ import Observation
             let names = Dictionary(
                 selection.photos.compactMap { p in p.id.map { ($0, p.stem) } }, uniquingKeysWith: { a, _ in a })
             let files = photoIDs.reduce(0) { $0 + (selection.versions[$1]?.count ?? 0) }
+            let permanently = selection.photos.allSatisfy(Library.isDeleted)
             let alert = NSAlert()
-            alert.messageText = trashQuestion(photos: photoIDs.count, files: files)
-            alert.addButton(withTitle: "Move to Trash")
+            alert.messageText = deleteQuestion(photos: photoIDs.count, files: files, permanently: permanently)
+            alert.informativeText = permanently
+                ? "They're moved to the Trash and can't be recovered in Loupe."
+                : "They stay in Recently Deleted for \(LibrarySettings.recentlyDeletedDays) days, then go to the Trash."
+            alert.addButton(withTitle: permanently ? "Delete Permanently" : "Delete")
             alert.addButton(withTitle: "Cancel")
             alert.buttons[0].hasDestructiveAction = true
             alert.beginSheetModal(for: window) { response in
                 guard response == .alertFirstButtonReturn else { return }
                 Task { @MainActor in
-                    let errors = await library.trash(photoIDs)
-                    presentErrors(errors, "Couldn't move to the Trash", names: names, model: model)
+                    let errors = permanently ? await library.deletePermanently(photoIDs) : await library.delete(photoIDs)
+                    presentErrors(errors, "Couldn't delete", names: names, model: model)
                     completion(photoIDs.filter { errors[$0] == nil })
                 }
             }
         }
     }
 
-    static func trashQuestion(photos: Int, files: Int) -> String {
-        "Move \(photos) photo\(photos == 1 ? "" : "s") (\(files) file\(files == 1 ? "" : "s")) to Trash?"
+    static func deleteQuestion(photos: Int, files: Int, permanently: Bool) -> String {
+        "Delete \(photos) photo\(photos == 1 ? "" : "s") (\(files) file\(files == 1 ? "" : "s"))"
+            + (permanently ? " permanently?" : "?")
     }
 
     private struct GridError: LocalizedError {
@@ -485,15 +603,17 @@ import Observation
             selectionDidChange()
         }
         let ids = orderedSelection()
-        guard !ids.isEmpty, library != nil else { return nil }
-        let menu = NSMenu()
-        menu.autoenablesItems = false
-        for group in actionEntries() {
-            for entry in group { menu.addItem(ActionMenuItems.item(entry) { [weak self] in self?.run($0) }) }
-            menu.addItem(.separator())
+        guard !ids.isEmpty, let library else { return nil }
+        let selection = try? library.index.actionSelection(ids: ids, root: library.location.rootURL)
+        let actions = selection.map { s in model.registry.actions.map { $0.entries(for: s) }.filter { !$0.isEmpty } } ?? []
+        let byID = Dictionary((selection?.photos ?? []).compactMap { p in p.id.map { ($0, p) } }, uniquingKeysWith: { a, _ in a })
+        let files = ids.compactMap { id -> URL? in
+            guard let selection, let versions = selection.versions[id] else { return nil }
+            return (versions.first(where: \.isDisplay) ?? versions.first)?.url(in: selection.root)
         }
-        for item in AlbumMenu.items(for: ids, model: model) { menu.addItem(item) }
-        return menu
+        return PhotoContextMenu.make(
+            ids: ids, photos: ids.compactMap { byID[$0] }, files: files, actions: actions, model: model,
+            run: { [weak self] in self?.run($0) }, trash: { [weak self] in self?.confirmTrash() })
     }
 
     private func performShortcut(_ key: Character) {
@@ -530,17 +650,135 @@ import Observation
     }
 
     /// Relayouts with `n` columns, keeping the first visible (preferably selected) photo where it was on screen.
+    /// The change reads as a zoom around that photo (unless Reduce Motion is on): a picture of the old tiles scales
+    /// and fades out while the new layout scales into place.
     private func applyColumns(_ n: Int) {
         let visible = collectionView.visibleItems().compactMap { collectionView.indexPath(for: $0) }
         let anchor = visible.filter(collectionView.selectionIndexPaths.contains).min() ?? visible.min()
-        let offset = anchor.flatMap { collectionView.layoutAttributesForItem(at: $0)?.frame.midY }
-            .map { $0 - collectionView.visibleRect.minY }
+        let anchorFrame = anchor.flatMap { collectionView.layoutAttributesForItem(at: $0)?.frame }
+        let clip = (view as! NSScrollView).contentView
+        let offset = anchorFrame.map { $0.midY - clip.bounds.minY }
+        let animates = anchorFrame != nil && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        let ghost = animates ? makeZoomGhost() : nil
+        let oldSide = tileSide()
         columns = n
         collectionView.collectionViewLayout?.invalidateLayout()
-        guard let anchor, let offset else { return }
+        defer { DispatchQueue.main.async { [weak self] in self?.updateVisibleInfo() } }
         collectionView.layoutSubtreeIfNeeded()
-        guard let frame = collectionView.layoutAttributesForItem(at: anchor)?.frame else { return }
+        guard let anchor, let offset, let frame = collectionView.layoutAttributesForItem(at: anchor)?.frame else { return }
         collectionView.scroll(NSPoint(x: 0, y: max(0, frame.midY - offset)))
+        collectionView.layoutSubtreeIfNeeded()
+        if let ghost {
+            zoom(ghost: ghost, by: oldSide / tileSide(), around: CGPoint(x: frame.midX - clip.bounds.minX, y: offset))
+        }
+    }
+
+    private func tileSide() -> CGFloat {
+        GridLayout.metrics(containerWidth: collectionView.bounds.width, columns: columns).side
+    }
+
+    private static let zoomDuration: CFTimeInterval = 0.25
+    private static let zoomTiming = CAMediaTimingFunction(controlPoints: 0.25, 0.8, 0.25, 1)
+    private static let zoomKey = "loupe.zoom"
+    private var zoomGhostView: NSView?
+
+    /// A picture of the photos on screen as drawn now (part way through a zoom if one is running), laid over the
+    /// grid in a view of its own; the layer to animate is returned.
+    private func makeZoomGhost() -> CALayer {
+        zoomGhostView?.removeFromSuperview()
+        let scrollView = view as! NSScrollView
+        let clip = scrollView.contentView
+        let host = ZoomGhostView(frame: clip.frame)
+        scrollView.addSubview(host, positioned: .above, relativeTo: clip)
+        zoomGhostView = host
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        let ghost = CALayer()
+        ghost.anchorPoint = .zero
+        ghost.frame = host.bounds
+        for case let cell as PhotoCell in collectionView.visibleItems() {
+            guard let image = cell.shownImage, cell.view.bounds.width > 0 else { continue }
+            let drawn = drawnFrame(of: cell.view).offsetBy(dx: -clip.bounds.minX, dy: -clip.bounds.minY)
+            let scale = drawn.width / cell.view.bounds.width
+            let photo = cell.photoFrame
+            let tile = CALayer()
+            tile.contents = image
+            tile.contentsGravity = .resizeAspectFill
+            tile.masksToBounds = true
+            tile.cornerCurve = .continuous
+            tile.cornerRadius = PhotoCellView.cornerRadius(for: photo) * scale
+            tile.frame = CGRect(x: drawn.minX + photo.minX * scale, y: drawn.minY + photo.minY * scale,
+                                width: photo.width * scale, height: photo.height * scale)
+            ghost.addSublayer(tile)
+        }
+        host.layer?.addSublayer(ghost)
+        CATransaction.commit()
+        return ghost
+    }
+
+    /// `view`'s frame in the collection view as drawn now, part way through a zoom if it is zooming.
+    private func drawnFrame(of view: NSView) -> CGRect {
+        let frame = collectionView.convert(view.frame, from: view.superview)
+        guard let layer = view.layer, layer.animation(forKey: Self.zoomKey) != nil,
+            let t = layer.presentation()?.transform
+        else { return frame }
+        let s = t.m11
+        let a = CGPoint(x: layer.anchorPoint.x * frame.width, y: layer.anchorPoint.y * frame.height)
+        return CGRect(x: frame.minX + (1 - s) * a.x + t.m41, y: frame.minY + (1 - s) * a.y + t.m42,
+                      width: frame.width * s, height: frame.height * s)
+    }
+
+    /// Scales the old tiles' picture by 1/`k` around `p` (on screen) as it fades, and every tile and header now on
+    /// screen from `k` times its size around `p` to its place, so the anchor photo stays put.
+    private func zoom(ghost: CALayer, by k: CGFloat, around p: CGPoint) {
+        guard k > 0, k != 1 else {
+            zoomGhostView?.removeFromSuperview()
+            return
+        }
+        let host = zoomGhostView
+        CATransaction.begin()
+        CATransaction.setCompletionBlock { [weak self, weak host] in
+            host?.removeFromSuperview()
+            if self?.zoomGhostView === host { self?.zoomGhostView = nil }
+        }
+        let shrink = 1 / k
+        let away = CABasicAnimation(keyPath: "transform")
+        away.toValue = NSValue(caTransform3D: Self.scale(by: shrink, around: p))
+        let fade = CABasicAnimation(keyPath: "opacity")
+        fade.toValue = 0
+        let group = CAAnimationGroup()
+        group.animations = [away, fade]
+        group.duration = Self.zoomDuration
+        group.timingFunction = Self.zoomTiming
+        group.fillMode = .forwards
+        group.isRemovedOnCompletion = false
+        ghost.add(group, forKey: Self.zoomKey)
+
+        let clip = (view as! NSScrollView).contentView.bounds
+        let kind = NSCollectionView.elementKindSectionHeader
+        let views = collectionView.visibleItems().map(\.view)
+            + collectionView.visibleSupplementaryViews(ofKind: kind)
+        for view in views {
+            guard let layer = view.layer else { continue }
+            // The layer's anchor point is its top left corner (AppKit), so `scale(by:around:)` applies as is
+            // once `p` is in the layer's own coordinates.
+            let origin = collectionView.convert(view.frame, from: view.superview).origin
+            let local = CGPoint(x: p.x + clip.minX - origin.x - layer.anchorPoint.x * view.frame.width,
+                                y: p.y + clip.minY - origin.y - layer.anchorPoint.y * view.frame.height)
+            let grow = CABasicAnimation(keyPath: "transform")
+            grow.fromValue = NSValue(caTransform3D: Self.scale(by: k, around: local))
+            grow.toValue = NSValue(caTransform3D: CATransform3DIdentity)
+            grow.duration = Self.zoomDuration
+            grow.timingFunction = Self.zoomTiming
+            layer.add(grow, forKey: Self.zoomKey)
+        }
+        CATransaction.commit()
+    }
+
+    /// Scaling by `s` that keeps `p` in place.
+    private static func scale(by s: CGFloat, around p: CGPoint) -> CATransform3D {
+        CATransform3DScale(CATransform3DMakeTranslation(p.x * (1 - s), p.y * (1 - s), 0), s, s, 1)
     }
 
     private func makeLayout() -> NSCollectionViewLayout {
@@ -606,6 +844,20 @@ import Observation
         item.setString(String(id), forType: Self.photoIDsType)
         return item
     }
+}
+
+/// Holds the picture of the old tiles while the grid zooms; flipped like the collection view, and click-through.
+private final class ZoomGhostView: NSView {
+    override var isFlipped: Bool { true }
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
 
 /// Routes keys, double-clicks, pinches and context menus to the controller.

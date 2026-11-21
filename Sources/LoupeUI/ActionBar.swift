@@ -119,6 +119,33 @@ extension AppModel {
         }
     }
 
+    /// Hides the photos (or shows them again); they leave every view but Hidden.
+    func setHidden(_ ids: [Int64], _ hidden: Bool) {
+        guard let library, !ids.isEmpty else { return }
+        Task {
+            let errors = await library.apply([.setHidden(hidden)], to: ids)
+            await presentActionErrors(errors, hidden ? "Couldn't hide" : "Couldn't unhide", library: library)
+        }
+    }
+
+    /// Puts deleted photos back in the albums they were deleted from.
+    func recover(_ ids: [Int64]) {
+        guard let library, !ids.isEmpty else { return }
+        Task {
+            let errors = await library.recover(ids)
+            await presentActionErrors(errors, "Couldn't recover", library: library)
+        }
+    }
+
+    /// Copies the photos' files next to them as "<name> copy".
+    func duplicate(_ ids: [Int64]) {
+        guard let library, !ids.isEmpty else { return }
+        Task {
+            let errors = await library.duplicate(ids)
+            await presentActionErrors(errors, "Couldn't duplicate", library: library)
+        }
+    }
+
     var canRotateTargets: Bool { library != nil && actionBarState.canRotate }
 
     /// Rotates the targets' stills a quarter turn through `Library.apply`; videos are left alone.
@@ -221,23 +248,56 @@ extension AppModel {
 /// the zoom slider. The buttons act on `AppModel.actionTargetIDs`.
 struct ActionCapsule: View {
     var model: AppModel
+    /// A narrow window: the buttons collapse into one drop-down menu.
+    var isCollapsed: Bool
     // `@State` is a macro whose plugin ships only with Xcode; see SettingsView.
-    private let showsInfo: State<Bool>
     private let shareAnchor: State<ViewBox>
 
-    init(model: AppModel) {
+    init(model: AppModel, isCollapsed: Bool) {
         self.model = model
-        showsInfo = State(initialValue: false)
+        self.isCollapsed = isCollapsed
         shareAnchor = State(initialValue: ViewBox())
     }
 
     var body: some View {
+        if isCollapsed { menu } else { buttons }
+    }
+
+    /// The same actions as `buttons`, in one menu; Info and Share open below the menu's button.
+    private var menu: some View {
         let state = model.actionBarState
-        HStack(spacing: 12) {
-            Button { showsInfo.wrappedValue.toggle() } label: { symbol("info.circle") }
+        return Menu {
+            Button("Get Info") { model.showsInfo = true }
+                .disabled(!state.canInfo)
+            Button("Play Slideshow") { model.startSlideshow() }
+                .disabled(!state.canPlay)
+            Button("Share…") {
+                if let view = shareAnchor.wrappedValue.view { model.showShareMenu(below: view) }
+            }
+            .disabled(!state.canShare)
+            Button(state.isFavorite ? "Unfavorite" : "Favorite") { model.toggleFavoriteOfTargets() }
+                .disabled(!state.canFavorite)
+            Divider()
+            Button("Rotate Left") { model.rotateTargets(clockwise: false) }
+                .disabled(!state.canRotate)
+            Button("Rotate Right") { model.rotateTargets(clockwise: true) }
+                .disabled(!state.canRotate)
+        } label: {
+            Label("Actions", systemImage: "ellipsis.circle")
+        }
+        .help("Actions")
+        .background(ViewCapture(box: shareAnchor.wrappedValue))
+        .popover(isPresented: infoBinding, arrowEdge: .bottom) { InfoPopover(model: model) }
+        .onChange(of: state.canInfo) { _, can in if !can { model.showsInfo = false } }
+    }
+
+    private var buttons: some View {
+        let state = model.actionBarState
+        return HStack(spacing: 12) {
+            Button { model.showsInfo.toggle() } label: { symbol("info.circle") }
                 .help("Get Info")
                 .disabled(!state.canInfo)
-                .popover(isPresented: showsInfo.projectedValue, arrowEdge: .bottom) { InfoPopover(model: model) }
+                .popover(isPresented: infoBinding, arrowEdge: .bottom) { InfoPopover(model: model) }
             Button { model.startSlideshow() } label: { symbol("play.fill") }
                 .help("Play Slideshow")
                 .disabled(!state.canPlay)
@@ -262,7 +322,12 @@ struct ActionCapsule: View {
         }
         .buttonStyle(.borderless)
         .padding(.horizontal, 10)  // room inside the toolbar's capsule
-        .onChange(of: state.canInfo) { _, can in if !can { showsInfo.wrappedValue = false } }
+        .onChange(of: state.canInfo) { _, can in if !can { model.showsInfo = false } }
+    }
+
+    /// The Info popover is the model's, so the grid's context menu can open it too.
+    private var infoBinding: Binding<Bool> {
+        Binding(get: { model.showsInfo }, set: { model.showsInfo = $0 })
     }
 
     private func symbol(_ name: String) -> some View {

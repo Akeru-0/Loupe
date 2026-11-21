@@ -74,6 +74,10 @@ final class PhotoCell: NSCollectionViewItem {
 
     override func loadView() { view = PhotoCellView() }
 
+    /// The thumbnail the tile shows and where it sits in the item's view, for the viewer's opening flight.
+    var shownImage: CGImage? { cellView.image }
+    var photoFrame: CGRect { cellView.photoFrame }
+
     override var isSelected: Bool {
         didSet { cellView.isSelected = isSelected }
     }
@@ -129,6 +133,9 @@ final class PhotoCellView: NSView {
     private let placeholder = NSImageView()
     /// Pixel size of the shown thumbnail; nil until it loads (a rounded square placeholder until then).
     private var imageSize: CGSize?
+    private(set) var image: CGImage?
+
+    var photoFrame: CGRect { Self.photoRect(for: imageSize, in: bounds) }
 
     var isSelected = false {
         didSet { selectionLayer.isHidden = !isSelected }
@@ -170,6 +177,7 @@ final class PhotoCellView: NSView {
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
 
     func setImage(_ image: CGImage?, failed: Bool) {
+        self.image = image
         imageLayer.contents = image
         let size = image.map { CGSize(width: $0.width, height: $0.height) }
         if size != imageSize {
@@ -191,6 +199,10 @@ final class PhotoCellView: NSView {
                       y: bounds.minY + ((bounds.height - h) / 2).rounded(), width: w, height: h)
     }
 
+    static func cornerRadius(for photo: CGRect) -> CGFloat {
+        min(10, max(3, min(photo.width, photo.height) * 0.05))
+    }
+
     func show(_ info: CellInfo?) {
         kinds.stringValue = info?.badges.joined(separator: " ") ?? ""
         rating.stringValue = (info?.rating ?? 0) > 0 ? "★\(info!.rating)" : ""
@@ -209,7 +221,7 @@ final class PhotoCellView: NSView {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         let photo = Self.photoRect(for: imageSize, in: bounds)
-        let radius = min(10, max(3, min(photo.width, photo.height) * 0.05))
+        let radius = Self.cornerRadius(for: photo)
         imageLayer.frame = photo
         imageLayer.cornerRadius = radius
         selectionLayer.frame = photo

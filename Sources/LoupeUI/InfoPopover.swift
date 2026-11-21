@@ -34,7 +34,9 @@ struct InfoPopover: View {
                 Text("No photos selected").foregroundStyle(.secondary)
             }
         }
-        .frame(width: 320, height: ids.count > 1 ? 200 : 440)
+        .frame(width: 320)
+        .frame(height: ids.count > 1 ? 200 : nil)
+        .fixedSize(horizontal: false, vertical: ids.count == 1)  // one photo: as tall as its info
     }
 }
 

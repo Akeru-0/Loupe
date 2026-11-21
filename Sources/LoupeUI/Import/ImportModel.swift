@@ -7,6 +7,8 @@ import Observation
 
 /// Where an import goes.
 enum ImportDestination: Hashable, Codable, Sendable {
+    /// The Photos folder at the top of the library, created by the first import into it. The default.
+    case photos
     /// The library root.
     case unsorted
     /// An existing album, root-relative.
@@ -17,6 +19,7 @@ enum ImportDestination: Hashable, Codable, Sendable {
     /// The root-relative folder the import goes to (missing folders are created by the importer).
     var folder: String {
         switch self {
+        case .photos: return Self.photosFolder
         case .unsorted: return ""
         case .album(let path): return path
         case .newAlbum(let name, let group):
@@ -24,6 +27,8 @@ enum ImportDestination: Hashable, Codable, Sendable {
             return (parts.filter { !$0.isEmpty } + [name.trimmingCharacters(in: .whitespaces)]).joined(separator: "/")
         }
     }
+
+    static let photosFolder = LibrarySettings.photosFolderName
 
     /// New Album's group: the current year, e.g. `2026` → `2026/<name>`.
     static func defaultGroup(for date: Date = Date()) -> String {
@@ -97,6 +102,7 @@ extension PhotoGroup {
     }
 
     static let destinationKey = "import.lastDestination"
+    static let deleteSourcesKey = "import.deleteFromCard"
 
     let card: Card
     private(set) var groups: [PhotoGroup] = []
@@ -106,6 +112,8 @@ extension PhotoGroup {
     /// `PhotoGroup.importID`s.
     var selection: Set<String> = []
     var destination: ImportDestination { didSet { saveDestination() } }
+    /// Delete each photo from the card once its copy in the library is verified. Remembered; off by default.
+    var deletesSources: Bool { didSet { preferences.set(deletesSources, forKey: Self.deleteSourcesKey) } }
     private(set) var phase: Phase = .listing
 
     /// Thumbnails of card files, cached in the library's normal thumbnail directory.
@@ -132,9 +140,10 @@ extension PhotoGroup {
         if case .album(let path) = remembered, let albums,
             !albums.contains(path.precomposedStringWithCanonicalMapping)
         {
-            remembered = .unsorted
+            remembered = .photos
         }
         destination = remembered
+        deletesSources = preferences.bool(forKey: Self.deleteSourcesKey) ?? false
     }
 
     // MARK: - State
@@ -233,7 +242,7 @@ extension PhotoGroup {
     func cancel() { cancelImport?() }
 
     private func startImport(_ groups: [PhotoGroup]) -> Task<Void, Never> {
-        let plan = ImportPlan(groups: groups, destinationFolder: destination.folder)
+        let plan = ImportPlan(groups: groups, destinationFolder: destination.folder, deleteSources: deletesSources)
         let filesTotal = groups.reduce(0) { $0 + $1.allFiles.count }
         let bytesTotal = groups.reduce(Int64(0)) { $0 + $1.versions.reduce(0) { $0 + $1.file.size } }
         phase = .importing(ImportProgress(filesDone: 0, filesTotal: filesTotal, bytesDone: 0, bytesTotal: bytesTotal))
@@ -266,6 +275,9 @@ extension PhotoGroup {
                 present.formUnion(group.versions.map(\.file.url))
                 selection.remove(group.importID)
             }
+            // Photos deleted from the card leave its listing.
+            let deleted = Set(result.deletedSources)
+            groups.removeAll { group in !group.allFiles.isEmpty && group.allFiles.allSatisfy(deleted.contains) }
             if case .newAlbum = destination { destination = .album(result.destinationFolder) }
             phase = .done(result)
         case .failure(let error):
@@ -287,24 +299,35 @@ extension PhotoGroup {
     private static func loadDestination(from preferences: any PreferenceStore) -> ImportDestination {
         guard let json = preferences.string(forKey: destinationKey),
             let destination = try? JSONDecoder().decode(ImportDestination.self, from: Data(json.utf8))
-        else { return .unsorted }
-        if case .newAlbum = destination { return .unsorted }
+        else { return .photos }
+        if case .newAlbum = destination { return .photos }
         return destination
     }
 
     // MARK: - Summary
 
-    /// "125 files imported, 2 skipped, 1 failed."
+    /// "125 files imported and deleted from the card, 2 skipped, 1 failed, 1 couldn't be deleted from the card."
     static func summary(of result: ImportResult) -> String {
-        var parts = ["\(result.imported.count) \(result.imported.count == 1 ? "file" : "files") imported"]
+        var first = "\(result.imported.count) \(result.imported.count == 1 ? "file" : "files") imported"
+        if !result.deletedSources.isEmpty {
+            first += result.deletedSources.count == result.imported.count
+                ? " and deleted from the card" : " (\(result.deletedSources.count) deleted from the card)"
+        }
+        var parts = [first]
         if !result.skipped.isEmpty { parts.append("\(result.skipped.count) skipped") }
         if !result.failed.isEmpty { parts.append("\(result.failed.count) failed") }
+        if !result.sourceDeleteFailures.isEmpty {
+            parts.append("\(result.sourceDeleteFailures.count) couldn't be deleted from the card")
+        }
         return parts.joined(separator: ", ") + "."
     }
 
-    /// One line per failed file, by name: "IMG_1.CR2: <reason>".
+    /// One line per failed file, by name: "IMG_1.CR2: <reason>"; then files that stayed on the card.
     static func failures(of result: ImportResult) -> [String] {
         result.failed.map { "\($0.key.lastPathComponent): \($0.value.localizedDescription)" }.sorted()
+            + result.sourceDeleteFailures.map {
+                "\($0.key.lastPathComponent): imported, but not deleted from the card: \($0.value.localizedDescription)"
+            }.sorted()
     }
 }
 
