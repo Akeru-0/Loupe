@@ -9,6 +9,8 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/groue/GRDB.swift", from: "7.0.0"),
+        // Updates for the installed app (EdDSA-signed releases on GitHub; see scripts/release.sh).
+        .package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.10.1"),
     ],
     targets: [
         .target(name: "LoupeCore"),
@@ -40,7 +42,7 @@ let package = Package(
         .target(name: "LoupeTestSupport", dependencies: ["LoupeCore"]),
         .executableTarget(
             name: "Loupe",
-            dependencies: ["LoupeUI"],
+            dependencies: ["LoupeUI", .product(name: "Sparkle", package: "Sparkle")],
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
         .testTarget(name: "LoupeCoreTests", dependencies: ["LoupeCore"]),

@@ -35,6 +35,7 @@ public struct SettingsView: View {
             Tab("Cloud", systemImage: "icloud") { page { cloudSection } }
             Tab("Editing", systemImage: "pencil") { page { editingSection } }
             Tab("Sharing", systemImage: "square.and.arrow.up") { page { sharingSection } }
+            Tab("Updates", systemImage: "arrow.down.circle") { page { UpdatesSection(model: model) } }
         }
         .frame(width: 560)
     }

@@ -22,6 +22,12 @@
 	<string>15.0</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
+	<key>SUFeedURL</key>
+	<string>https://github.com/Akeru-0/Loupe/releases/latest/download/appcast.xml</string>
+	<key>SUPublicEDKey</key>
+	<string>a3Dz2m7FOl1E+w6Ej5cO86QWteulVFkOn1g1uckQBg0=</string>
+	<key>SUEnableAutomaticChecks</key>
+	<true/>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
 </dict>

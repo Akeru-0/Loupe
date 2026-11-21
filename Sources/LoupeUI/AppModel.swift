@@ -97,6 +97,8 @@ public struct SidebarGroup: Identifiable, Sendable {
     /// Settings ▸ Import ▸ Import from Apple Photos, and Settings ▸ Faces' downloadable recognition model.
     @ObservationIgnored private(set) lazy var applePhotosImport = ApplePhotosImport(supportDirectory: supportDirectory)
     @ObservationIgnored private(set) lazy var faceModel = FaceRecognitionModel(supportDirectory: supportDirectory)
+    /// Updates for the installed app (set by the app target; nil in development builds).
+    @ObservationIgnored public var updater: (any AppUpdater)?
     /// Face recognition (FaceScanning.swift).
     var faceScanStatus: FaceScanStatus = .unavailable
     /// The people and pets People shows, and the one opened from it (its photos are shown).

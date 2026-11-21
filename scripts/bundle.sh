@@ -1,16 +1,33 @@
 #!/bin/sh
-# Builds Loupe and assembles build/Loupe.app (ad-hoc signed). No Xcode needed.
+# Builds Loupe and assembles build/Loupe.app (with Sparkle embedded) and signs it. No Xcode needed.
 # Usage: scripts/bundle.sh [debug|release]
+# Env:   VERSION=1.2.0 BUILD=57   stamp the version (else Resources/Info.plist's)
+#        SIGN_IDENTITY="…"        code signing identity (default: the "Loupe" self-signed certificate if it's in
+#                                 the keychain, else ad hoc). The same identity every release keeps macOS
+#                                 permissions such as Full Disk Access across updates.
 set -e
 cd "$(dirname "$0")/.."
 CONF="${1:-debug}"
 swift build --build-system native -c "$CONF" --product Loupe
-BIN="$(swift build --build-system native -c "$CONF" --show-bin-path)/Loupe"
+BIN_DIR="$(swift build --build-system native -c "$CONF" --show-bin-path)"
 APP=build/Loupe.app
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-cp "$BIN" "$APP/Contents/MacOS/Loupe"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Frameworks"
+cp "$BIN_DIR/Loupe" "$APP/Contents/MacOS/Loupe"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
 cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"  # drawn by scripts/make-icon.swift
-codesign --force --sign - "$APP"
-echo "Built $APP ($CONF)"
+cp -R "$BIN_DIR/Sparkle.framework" "$APP/Contents/Frameworks/"
+install_name_tool -add_rpath "@executable_path/../Frameworks" "$APP/Contents/MacOS/Loupe"
+
+if [ -n "$VERSION" ]; then /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$APP/Contents/Info.plist"; fi
+if [ -n "$BUILD" ]; then /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD" "$APP/Contents/Info.plist"; fi
+
+if [ -z "$SIGN_IDENTITY" ]; then
+  if security find-identity -v -p codesigning | grep -q '"Loupe"'; then SIGN_IDENTITY="Loupe"; else SIGN_IDENTITY="-"; fi
+fi
+if [ "$SIGN_IDENTITY" = "-" ]; then
+  echo "warning: signing ad hoc; create the \"Loupe\" certificate (see scripts/release.sh) so updates keep permissions" >&2
+fi
+codesign --force --deep --sign "$SIGN_IDENTITY" "$APP"
+codesign --verify --deep --strict "$APP"
+echo "Built $APP ($CONF, signed by $SIGN_IDENTITY)"
