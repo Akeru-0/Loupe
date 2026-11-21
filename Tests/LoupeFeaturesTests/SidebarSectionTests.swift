@@ -19,6 +19,8 @@ import LoupeTestSupport
         try lib.addJPEG("Old.photoslibrary/IMG_5.jpg")
         try lib.addJPEG("LightCraft Library/thumbs/t.jpg")
         try lib.addJPEG("Trip/Skip Me/IMG_6.jpg")
+        try lib.addJPEG("Photos/IMG_7.jpg")  // where imports go: photos, not an album
+        try lib.addJPEG("Photos/2026/IMG_8.jpg")
         try AlbumCatalogIO.save(
             AlbumCatalog(albums: [AlbumEntry(name: "Zebra"), AlbumEntry(name: "Gone"), AlbumEntry(name: "Alpha")]),
             root: lib.root)
@@ -40,10 +42,10 @@ import LoupeTestSupport
         try #require(items.count == 5)
         #expect(items[1].isEmpty)  // plain 40x30 JPEGs: no videos, panoramas or RAW, so nothing is listed
         // Utilities are always listed; no duplicate check has run, so Duplicates has no count.
-        #expect(items[2].map(\.title) == ["Recently Edited", "Duplicates"])
-        #expect(items[2].map(\.scope) == [.recentlyEdited(days: 30), .duplicates])
-        #expect(items[2].map(\.systemImage) == ["slider.horizontal.3", "square.on.square"])
-        #expect(items[2].map(\.badge) == [nil, nil])
+        #expect(items[2].map(\.title) == ["People", "Recently Edited", "Duplicates", "Imports", "Hidden", "Recently Deleted"])
+        #expect(items[2].map(\.scope) == [.people, .recentlyEdited(days: 30), .duplicates, .imports, .hidden, .recentlyDeleted])
+        #expect(items[2].map(\.systemImage) == ["person.crop.square", "slider.horizontal.3", "square.on.square", "square.and.arrow.down", "eye.slash", "trash"])
+        #expect(items[2].map(\.badge) == [nil, nil, nil, nil, nil, nil])  // nobody found yet; no failed uploads
         #expect(items[2].allSatisfy { $0.dropTarget == nil })
 
         let library = items[0]
@@ -56,7 +58,7 @@ import LoupeTestSupport
         // The real folder tree: a folder with photos (or an empty one) is an album, a folder with only subfolders
         // is a group. Hidden, package and excluded folders are skipped; ":" on disk shows as "/".
         let albums = items[3]
-        #expect(albums.map(\.title) == ["Empty", "Screen shots/recording", "Trip"])
+        #expect(albums.map(\.title) == ["Empty", "Screen shots/recording", "Trip"])  // no Photos
         #expect(albums.map(\.scope) == [.folderTree("Empty"), .folder("Screen shots:recording"), .folder("Trip")])
         #expect(albums.map(\.dropTarget) == [nil, .folder("Screen shots:recording"), .folder("Trip")])
         #expect(albums.map(\.systemImage) == ["folder", "rectangle.stack", "rectangle.stack"])
@@ -122,7 +124,7 @@ import LoupeTestSupport
         SidebarFeature.register(in: &registry)
         let section = try #require(registry.sidebarSections.first { $0.title == "Utilities" })
         let items = try section.items(index: index, root: lib.root, settings: settings)
-        #expect(items.map(\.scope) == [.recentlyEdited(days: 7), .duplicates])  // Recently Added's window
-        #expect(items.map(\.badge) == [nil, 2])
+        #expect(items.map(\.scope) == [.people, .recentlyEdited(days: 7), .duplicates, .imports, .hidden, .recentlyDeleted])  // Recently Added's window
+        #expect(items.map(\.badge) == [nil, nil, 2, nil, nil, nil])
     }
 }

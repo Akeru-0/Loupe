@@ -38,35 +38,52 @@ struct MediaTypesSidebarSection: SidebarSection {
     }
 }
 
-/// Recently Edited (same window as Recently Added) and Duplicates (with the number of sets once there are any).
-/// Always listed.
+/// People (the people and pets face recognition found, with how many; it opens their grid), Recently Edited (same
+/// window as Recently Added), Duplicates (with the number of sets once there are any), Imports, Hidden and Recently
+/// Deleted (both locked in the app), and Unable to Upload, only while some photos'
+/// cloud upload failed (with their number).
 struct UtilitiesSidebarSection: SidebarSection {
     let id = "utilities"
     let title: String? = "Utilities"
     let order = 60
 
     func items(index: LibraryIndex, root: URL, settings: LibrarySettings) throws -> [SidebarItem] {
+        let people = try index.faceGroups().count
         let duplicates = try index.duplicateSetCount()
+        let failed = try index.uploadFailurePhotoCount()
         return [
+            SidebarItem(
+                id: "people", title: "People", systemImage: "person.crop.square", scope: .people,
+                badge: people > 0 ? people : nil),
             SidebarItem(
                 id: "edited", title: "Recently Edited", systemImage: "slider.horizontal.3",
                 scope: .recentlyEdited(days: settings.recentlyAddedDays)),
             SidebarItem(
                 id: "duplicates", title: "Duplicates", systemImage: "square.on.square", scope: .duplicates,
                 badge: duplicates > 0 ? duplicates : nil),
-        ]
+            SidebarItem(id: "imports", title: "Imports", systemImage: "square.and.arrow.down", scope: .imports),
+            SidebarItem(id: "hidden", title: "Hidden", systemImage: "eye.slash", scope: .hidden),
+            SidebarItem(id: "deleted", title: "Recently Deleted", systemImage: "trash", scope: .recentlyDeleted),
+        ] + (failed > 0 ? [
+            SidebarItem(
+                id: "upload-failed", title: "Unable to Upload", systemImage: "exclamationmark.icloud",
+                scope: .unableToUpload, badge: failed),
+        ] : [])
     }
 }
 
 /// Albums are folders: the real folder tree under the root. Albums take dropped photos; groups (folders with only
-/// subfolders) show everything below them and take no drops. Keyword albums are not shown.
+/// subfolders) show everything below them and take no drops. Keyword albums are not shown, nor are the Photos folder
+/// imports go to and Recently Deleted (`LibrarySettings.photosFolderName`, `.recentlyDeletedFolderName`).
 struct AlbumsSidebarSection: SidebarSection {
     let id = "albums"
     let title: String? = "Albums"
     let order = 100
 
     func items(index: LibraryIndex, root: URL, settings: LibrarySettings) throws -> [SidebarItem] {
-        try index.albumTree(root: root, settings: settings).map(Self.item)
+        try index.albumTree(root: root, settings: settings)
+            .filter { $0.path != LibrarySettings.photosFolderName && $0.path != LibrarySettings.recentlyDeletedFolderName }
+            .map(Self.item)
     }
 
     static func item(_ node: AlbumNode) -> SidebarItem {

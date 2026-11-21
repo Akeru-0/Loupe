@@ -1,24 +1,38 @@
 import AppKit
 import LoupeCore
 
-/// "Edit": opens the selected photo files in an external editor (the default one first).
+/// "Edit": opens the selected photo files in the default external editor (chosen the first time). Its children
+/// ("Edit With ▸" in menus) only choose the default: the apps that open the file, the current default checked, and
+/// "Other…" for any app.
 public struct EditInAction: PhotoAction {
-    public static let lightCraftBundleID = "ai.storyteller.lightcraft"
+    public static let lightCraftBundleID = LightCraftBridge.bundleID
 
     /// Side effects, injectable so tests never launch apps.
     public struct Hooks: Sendable {
         public var openFiles: @Sendable (_ files: [URL], _ app: URL) async throws -> Void
         public var revealFiles: @Sendable (_ files: [URL]) -> Void
         public var activateApp: @Sendable (_ app: URL) async throws -> Void
+        /// Opens the files in LightCraft over its control channel (starting it connected if needed).
+        public var editInLightCraft: @Sendable (_ files: [URL], _ app: URL) async throws -> Void
 
         public init(
             openFiles: @escaping @Sendable ([URL], URL) async throws -> Void,
             revealFiles: @escaping @Sendable ([URL]) -> Void,
-            activateApp: @escaping @Sendable (URL) async throws -> Void
+            activateApp: @escaping @Sendable (URL) async throws -> Void,
+            editInLightCraft: @escaping @Sendable ([URL], URL) async throws -> Void = Hooks.liveLightCraft
         ) {
             self.openFiles = openFiles
             self.revealFiles = revealFiles
             self.activateApp = activateApp
+            self.editInLightCraft = editInLightCraft
+        }
+
+        public static let liveLightCraft: @Sendable ([URL], URL) async throws -> Void = { files, app in
+            let control = try await LightCraftBridge.connect(app: app)
+            try await Task.detached { try LightCraftBridge.edit(files, control: control) }.value
+            await MainActor.run {
+                _ = NSRunningApplication.runningApplications(withBundleIdentifier: LightCraftBridge.bundleID).first?.activate()
+            }
         }
 
         public static let live = Hooks(
@@ -50,25 +64,37 @@ public struct EditInAction: PhotoAction {
     @MainActor public func entries(for selection: ActionSelection) -> [ActionMenuEntry] {
         let files = selection.targetFiles()
         guard let first = files.first else { return [] }
+        // LightCraft edits the RAW of a RAW + JPEG photo (its sidecar describes the RAW), unless a version is focused.
+        let lightCraftFiles = selection.focusedVersion != nil ? files : selection.photos.compactMap { photo -> URL? in
+            guard let id = photo.id, let versions = selection.versions[id] else { return nil }
+            return (versions.first { $0.kind == .raw } ?? versions.first(where: \.isDisplay) ?? versions.first)?
+                .url(in: selection.root)
+        }
         let defaults = self.defaults
         let hooks = self.hooks
         let defaultEditor = EditorPreferences.defaultEditor(in: defaults)
 
         func open(_ app: URL, _ context: any ActionContext) async throws {
             if Bundle(url: app)?.bundleIdentifier == Self.lightCraftBundleID {
-                // LightCraft declares no document types, so it can't be asked to open files.
-                hooks.revealFiles(files)
-                try await hooks.activateApp(app)
-                context.log("LightCraft can't open files directly — drag the selected file into LightCraft")
+                // LightCraft declares no document types: it is driven over its control channel instead. If that
+                // can't be done, the files are shown in Finder to drag in.
+                do {
+                    try await hooks.editInLightCraft(lightCraftFiles, app)
+                } catch {
+                    hooks.revealFiles(lightCraftFiles)
+                    try await hooks.activateApp(app)
+                    context.log("Couldn't open in LightCraft: \(error.localizedDescription) "
+                        + "Drag the selected file into LightCraft instead.")
+                }
             } else {
                 try await hooks.openFiles(files, app)
             }
         }
         func appEntry(_ app: URL, isDefault: Bool) -> ActionMenuEntry {
-            let name = FileManager.default.displayName(atPath: app.path)
-            return ActionMenuEntry(
-                id: "edit-in.app.\(app.path)", title: isDefault ? "\(name) (Default)" : name
-            ) { context in try await open(app, context) }
+            ActionMenuEntry(
+                id: "edit-in.app.\(app.path)", title: FileManager.default.displayName(atPath: app.path),
+                systemImage: isDefault ? "checkmark" : nil
+            ) { _ in EditorPreferences.setDefaultEditor(app, in: defaults) }
         }
 
         var children: [ActionMenuEntry] = []
@@ -76,7 +102,7 @@ public struct EditInAction: PhotoAction {
         for app in appsForFile(first) where app.standardizedFileURL != defaultEditor?.standardizedFileURL {
             children.append(appEntry(app, isDefault: false))
         }
-        children.append(ActionMenuEntry(id: "edit-in.choose", title: "Choose Default Editor…") { context in
+        children.append(ActionMenuEntry(id: "edit-in.choose", title: "Other…") { context in
             if let app = await context.chooseApplication() { EditorPreferences.setDefaultEditor(app, in: defaults) }
         })
 

@@ -29,6 +29,8 @@ public struct FinderTagStore: MetadataStore {
     private static func isAlbum(_ s: String) -> Bool { s.hasPrefix(Keywords.albumPrefix) }
     /// A keyword path (`a|b`, which includes `Albums|x`) is not a tag; such Finder tags are never pulled.
     private static func isPath(_ s: String) -> Bool { s.contains("|") }
+    /// "Hidden" is the sidecar's hide flag, never mirrored; a Finder tag of that name must not hide the photo.
+    private static func isHidden(_ s: String) -> Bool { key(s) == key(Keywords.hidden) }
 
     static func mirrorSet(_ m: PhotoMetadata) -> [String] {
         var seen = Set<String>()
@@ -107,7 +109,7 @@ public struct FinderTagStore: MetadataStore {
         let pushed = last?.files.map(Set.init)
         let perFile = try files.map { file in
             Dictionary(
-                try Self.read(file).filter { !Self.isStar($0) && !Self.isAlbum($0) && !Self.isPath($0) }
+                try Self.read(file).filter { !Self.isStar($0) && !Self.isAlbum($0) && !Self.isPath($0) && !Self.isHidden($0) }
                     .map { (Self.key($0), $0.precomposedStringWithCanonicalMapping) },
                 uniquingKeysWith: { a, _ in a })
         }

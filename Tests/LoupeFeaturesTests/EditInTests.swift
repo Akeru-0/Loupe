@@ -27,6 +27,10 @@ final class Calls: @unchecked Sendable {
     private var _opened: [([URL], URL)] = []
     private var _revealed: [[URL]] = []
     private var _activated: [URL] = []
+    private var _lightCraft: [[URL]] = []
+    /// What Edit in LightCraft does: nil succeeds, an error fails.
+    var lightCraftError: (any Error)?
+    var lightCraft: [[URL]] { lock.withLock { _lightCraft } }
     var opened: [([URL], URL)] { lock.withLock { _opened } }
     var revealed: [[URL]] { lock.withLock { _revealed } }
     var activated: [URL] { lock.withLock { _activated } }
@@ -34,7 +38,13 @@ final class Calls: @unchecked Sendable {
         .init(
             openFiles: { f, a in self.lock.withLock { self._opened.append((f, a)) } },
             revealFiles: { f in self.lock.withLock { self._revealed.append(f) } },
-            activateApp: { a in self.lock.withLock { self._activated.append(a) } }
+            activateApp: { a in self.lock.withLock { self._activated.append(a) } },
+            editInLightCraft: { f, _ in
+                try self.lock.withLock {
+                    self._lightCraft.append(f)
+                    if let error = self.lightCraftError { throw error }
+                }
+            }
         )
     }
 }
@@ -93,7 +103,8 @@ final class Calls: @unchecked Sendable {
         #expect(edit.title == "Edit")
         #expect(edit.shortcut == "e")
         #expect(edit.children.map(\.id) == ["edit-in.app.\(def.path)", "edit-in.app.\(other.path)", "edit-in.choose"])
-        #expect(edit.children.last?.title == "Choose Default Editor…")
+        #expect(edit.children.map(\.systemImage) == ["checkmark", nil, nil])  // the default is checked
+        #expect(edit.children.last?.title == "Other…")
     }
 
     @Test func normalAppOpensTargetFiles() async throws {
@@ -107,15 +118,25 @@ final class Calls: @unchecked Sendable {
         #expect(calls.revealed.isEmpty && calls.activated.isEmpty && ctx.logs.isEmpty)
     }
 
-    @Test func lightCraftRevealsActivatesAndLogsButNeverOpens() async throws {
+    @Test func lightCraftIsDrivenOverItsControlChannel() async throws {
         let lc = try fakeApp("ai.storyteller.lightcraft", name: "LightCraft")
         EditorPreferences.setDefaultEditor(lc, in: defaults)
         let ctx = FakeContext()
         try await action().entries(for: selection())[0].perform!(ctx)
+        #expect(calls.lightCraft.count == 1)
+        #expect(calls.opened.isEmpty && calls.revealed.isEmpty && ctx.logs.isEmpty)
+    }
+
+    @Test func lightCraftFallsBackToFinderWhenItCantBeDriven() async throws {
+        let lc = try fakeApp("ai.storyteller.lightcraft", name: "LightCraft")
+        EditorPreferences.setDefaultEditor(lc, in: defaults)
+        calls.lightCraftError = LightCraftBridge.BridgeError.runningWithoutControl
+        let ctx = FakeContext()
+        try await action().entries(for: selection())[0].perform!(ctx)
         #expect(calls.opened.isEmpty)
-        #expect(calls.revealed == [selection().targetFiles()])
+        #expect(calls.revealed == calls.lightCraft)
         #expect(calls.activated.map(\.path) == [lc.path])
-        #expect(ctx.logs == ["LightCraft can't open files directly — drag the selected file into LightCraft"])
+        #expect(ctx.logs.count == 1 && ctx.logs[0].contains("running without Loupe's connection"))
     }
 
     @Test func noDefaultChoosesSavesAndOpens() async throws {
@@ -127,13 +148,16 @@ final class Calls: @unchecked Sendable {
         #expect(calls.opened.count == 1)
     }
 
-    @Test func childOpensOnceWithoutChangingDefault() async throws {
+    @Test func childMakesItsAppTheDefaultWithoutOpening() async throws {
         let def = try fakeApp("x.default", name: "Default")
         let other = try fakeApp("x.other", name: "Other")
         EditorPreferences.setDefaultEditor(def, in: defaults)
         let child = action(apps: [other]).entries(for: selection())[0].children[1]
         try await child.perform!(FakeContext())
+        #expect(calls.opened.isEmpty)
+        #expect(EditorPreferences.defaultEditor(in: defaults)?.path == other.path)
+        // Edit now opens the new default.
+        try await action(apps: [other]).entries(for: selection())[0].perform!(FakeContext())
         #expect(calls.opened.count == 1 && calls.opened[0].1.path == other.path)
-        #expect(EditorPreferences.defaultEditor(in: defaults)?.path == def.path)
     }
 }
