@@ -82,6 +82,7 @@ public enum SidecarIO {
         seeding += seed.tags.map { .addTag($0) }
         seeding += seed.albums.map { .addToAlbum($0) }
         if seed.isFavorite { seeding.append(.setFavorite(true)) }
+        if seed.isHidden { seeding.append(.setHidden(true)) }
         doc.apply(seeding)
         if let orientation = seed.orientation { doc.setOrientation(orientation) }  // from a legacy sidecar
         doc.apply(changes, embeddedOrientation: embeddedOrientation)

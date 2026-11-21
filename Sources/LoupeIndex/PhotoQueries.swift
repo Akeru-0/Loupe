@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 import GRDB
 import LoupeCore
@@ -7,7 +8,7 @@ extension LibraryIndex {
         for query: PhotoQuery, calendar: Calendar = .current, locale: Locale = .current, now: Date = .now
     ) throws -> [PhotoSection] {
         let rows = try dbPool.read { try Self.fetchRows(db: $0, query: query, now: now) }
-        return Self.group(rows, by: query.grouping, calendar: calendar, locale: locale)
+        return Self.group(rows, by: query.scope == .imports ? .day : query.grouping, calendar: calendar, locale: locale)
     }
 
     /// Emits the current sections, then again after every change to the underlying tables.
@@ -22,7 +23,7 @@ extension LibraryIndex {
             let task = Task {
                 do {
                     for try await rows in observation.values(in: pool) {
-                        continuation.yield(Self.group(rows, by: query.grouping, calendar: calendar, locale: locale))
+                        continuation.yield(Self.group(rows, by: query.scope == .imports ? .day : query.grouping, calendar: calendar, locale: locale))
                     }
                     continuation.finish()
                 } catch {
@@ -85,9 +86,14 @@ extension LibraryIndex {
 
     // MARK: SQL
 
-    struct Row: Sendable, Equatable { var id: Int64; var captureDate: Date? }
+    struct Row: Sendable, Equatable {
+        var id: Int64
+        var captureDate: Date?
+        /// Imports: when the photo was imported, which its sections are by.
+        var importedAt: Date? = nil
+    }
 
-    static func escapeLike(_ s: String) -> String {
+    public static func escapeLike(_ s: String) -> String {
         s.replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "%", with: "\\%")
             .replacingOccurrences(of: "_", with: "\\_")
@@ -109,6 +115,62 @@ extension LibraryIndex {
         }
     }
 
+    /// A person or pet found in the library: a face group, how many photos show it, and its clearest face (the
+    /// photo and where in it, 0…1 from the top left) for its picture.
+    public struct FaceGroup: Equatable, Sendable, Identifiable {
+        public var id: Int64
+        /// `person`, `cat` or `dog`.
+        public var kind: String
+        public var photoCount: Int
+        public var coverFaceID: Int64
+        public var coverPhotoID: Int64
+        public var coverBox: CGRect
+        /// Given in People; nil until then.
+        public var name: String?
+
+        public init(
+            id: Int64, kind: String, photoCount: Int, coverFaceID: Int64, coverPhotoID: Int64, coverBox: CGRect,
+            name: String? = nil
+        ) {
+            self.name = name
+            self.id = id
+            self.kind = kind
+            self.photoCount = photoCount
+            self.coverFaceID = coverFaceID
+            self.coverPhotoID = coverPhotoID
+            self.coverBox = coverBox
+        }
+    }
+
+    /// The groups People shows: seen in at least this many photos.
+    public static let peopleMinPhotos = 2
+
+    /// The face groups seen in at least `minPhotos` photos, the most photographed first.
+    public func faceGroups(minPhotos: Int = LibraryIndex.peopleMinPhotos) throws -> [FaceGroup] {
+        try dbPool.read { db in
+            try GRDB.Row.fetchAll(
+                db,
+                sql: """
+                    SELECT g.id, g.kind, g.photoCount, g.coverFaceId, g.name, f.photoId, f.x, f.y, f.w, f.h
+                    FROM face_group g JOIN face f ON f.id = g.coverFaceId
+                    WHERE g.photoCount >= ? ORDER BY g.photoCount DESC, g.id
+                    """,
+                arguments: [minPhotos]
+            ).map {
+                FaceGroup(
+                    id: $0["id"], kind: $0["kind"], photoCount: $0["photoCount"], coverFaceID: $0["coverFaceId"],
+                    coverPhotoID: $0["photoId"],
+                    coverBox: CGRect(x: $0["x"] as Double, y: $0["y"] as Double, width: $0["w"] as Double, height: $0["h"] as Double),
+                    name: $0["name"])
+            }
+        }
+    }
+
+    /// Photos whose last cloud upload failed (Unable to Upload is listed only while there are any).
+    public func uploadFailurePhotoCount() throws -> Int {
+        try dbPool.read { try Int.fetchOne($0, sql: "SELECT COUNT(DISTINCT photoId) FROM upload_failure") ?? 0 }
+    }
+
     /// Whether any photo matches the media type (cheap: stops at the first).
     public func hasMedia(_ type: MediaType) throws -> Bool {
         try dbPool.read {
@@ -120,8 +182,32 @@ extension LibraryIndex {
         var clauses: [String] = []
         var args: [any DatabaseValueConvertible] = []
 
+        // Recently Deleted holds deleted photos, hidden ones too; everything else leaves them out, and hidden photos.
+        let deleted = LibrarySettings.recentlyDeletedFolderName
+        let inDeleted = "(p.folderPath = ? OR p.folderPath LIKE ? ESCAPE '\\')"
+        clauses.append(q.scope == .recentlyDeleted ? inDeleted : "NOT " + inDeleted)
+        args.append(contentsOf: [deleted, escapeLike(deleted) + "/%"])
+        if q.scope != .recentlyDeleted { clauses.append(q.scope == .hidden ? "p.isHidden = 1" : "p.isHidden = 0") }
+        // Imports: a version whose content was recorded as imported (matched through the hash cache, which keeps
+        // absolute paths; `library_meta` has the root).
+        let importedAt = """
+            (SELECT MAX(r.importedAt) FROM version v \
+            JOIN file_hash h ON h.path = (SELECT value FROM library_meta WHERE key = 'root') || '/' || v.path \
+            JOIN import_record r ON r.sha256 = h.sha256 WHERE v.photoId = p.id)
+            """
         switch q.scope {
-        case .all: break
+        case .all, .hidden, .recentlyDeleted: break
+        case .imports: clauses.append("\(importedAt) IS NOT NULL")
+        case .unableToUpload: clauses.append("EXISTS (SELECT 1 FROM upload_failure f WHERE f.photoId = p.id)")
+        case .people:
+            clauses.append("""
+                EXISTS (SELECT 1 FROM face f JOIN face_group g ON g.id = f.groupId \
+                WHERE f.photoId = p.id AND g.photoCount >= ?)
+                """)
+            args.append(LibraryIndex.peopleMinPhotos)
+        case .faceGroup(let id):
+            clauses.append("EXISTS (SELECT 1 FROM face f WHERE f.photoId = p.id AND f.groupId = ?)")
+            args.append(id)
         case .favorites: clauses.append("p.isFavorite = 1")
         case .recentlyAdded(let days):
             clauses.append("p.addedDate >= ?")
@@ -176,7 +262,7 @@ extension LibraryIndex {
         if let lens = q.lens { clauses.append("p.lensModel = ?"); args.append(lens) }
 
         let dir = q.ascending ? "ASC" : "DESC"
-        let order: String
+        var order: String
         switch q.sort {
         case .captureDate: order = "p.captureDate IS NULL, p.captureDate \(dir)"
         case .added: order = "p.addedDate \(dir)"
@@ -184,11 +270,16 @@ extension LibraryIndex {
         case .rating: order = "p.rating \(dir)"
         case .edited: order = "p.lastEditedAt IS NULL, p.lastEditedAt \(dir)"
         }
+        let imports = q.scope == .imports
+        if imports { order = "importedAt DESC, " + order }  // newest import first, then the chosen sort
         let whereSQL = clauses.isEmpty ? "" : "WHERE " + clauses.joined(separator: " AND ")
-        let sql = "SELECT p.id, p.captureDate FROM photo p \(whereSQL) ORDER BY \(order), p.id ASC"
+        let columns = imports ? "p.id, p.captureDate, \(importedAt) AS importedAt" : "p.id, p.captureDate"
+        let sql = "SELECT \(columns) FROM photo p \(whereSQL) ORDER BY \(order), p.id ASC"
         return try GRDB.Row.fetchAll(db, sql: sql, arguments: StatementArguments(args)).map {
             let t: Double? = $0["captureDate"]
-            return Row(id: $0["id"], captureDate: t.map(Date.init(timeIntervalSince1970:)))
+            let imported: Double? = imports ? $0["importedAt"] : nil
+            return Row(id: $0["id"], captureDate: t.map(Date.init(timeIntervalSince1970:)),
+                       importedAt: imported.map(Date.init(timeIntervalSince1970:)))
         }
     }
 
@@ -196,7 +287,9 @@ extension LibraryIndex {
 
     static func group(_ rows: [Row], by grouping: PhotoQuery.Grouping, calendar: Calendar, locale: Locale) -> [PhotoSection] {
         let ids = rows.map(\.id)
-        if grouping == .none { return ids.isEmpty ? [] : [PhotoSection(id: "all", title: "", photoIDs: ids)] }
+        if grouping == .none {
+            return ids.isEmpty ? [] : [PhotoSection(id: "all", title: "", photoIDs: ids, captureDates: rows.map(\.captureDate))]
+        }
 
         let formatter = DateFormatter()
         formatter.locale = locale
@@ -212,7 +305,8 @@ extension LibraryIndex {
         var indexByID: [String: Int] = [:]
         var undated: [Int64] = []
         for row in rows {
-            guard let date = row.captureDate else { undated.append(row.id); continue }
+            // Imports are grouped by import day; everything else by capture date.
+            guard let date = row.importedAt ?? row.captureDate else { undated.append(row.id); continue }
             let c = calendar.dateComponents([.year, .month, .day], from: date)
             let y = c.year ?? 0, m = c.month ?? 0, d = c.day ?? 0
             let id: String
@@ -223,12 +317,17 @@ extension LibraryIndex {
             }
             if let i = indexByID[id] {
                 sections[i].photoIDs.append(row.id)
+                sections[i].captureDates.append(row.captureDate)
             } else {
                 indexByID[id] = sections.count
-                sections.append(PhotoSection(id: id, title: formatter.string(from: date), photoIDs: [row.id]))
+                sections.append(PhotoSection(
+                    id: id, title: formatter.string(from: date), photoIDs: [row.id], captureDates: [row.captureDate]))
             }
         }
-        if !undated.isEmpty { sections.append(PhotoSection(id: "undated", title: "Undated", photoIDs: undated)) }
+        if !undated.isEmpty {
+            sections.append(PhotoSection(
+                id: "undated", title: "Undated", photoIDs: undated, captureDates: Array(repeating: nil, count: undated.count)))
+        }
         return sections
     }
 }

@@ -15,10 +15,11 @@ import LoupeTestSupport
             kCGImagePropertyExifISOSpeedRatings: [100],
             kCGImagePropertyExifFocalLength: 35,
         ])
-        let values = ExifSummary.lines(for: url).map(\.value)
-        #expect(values.contains("ƒ/2.8"))
-        #expect(values.contains("1/250 s"))
-        #expect(values.contains("ISO 100"))
-        #expect(values.contains("35 mm"))
+        let summary = ExifSummary(url: url)
+        #expect(summary.aperture == "ƒ2.8")
+        #expect(summary.shutter == "1/250 s")
+        #expect(summary.iso == "ISO 100")
+        #expect(summary.focalLength == "35 mm")
+        #expect(summary.exposure == ["ISO 100", "35 mm", "ƒ2.8", "1/250 s"])
     }
 }

@@ -180,6 +180,63 @@ private func addFullGroup(_ lib: TestLibrary, _ dir: String) throws {
         #expect(try e.library.index.photo(key: "a/IMG_1") == nil)
     }
 
+    @Test func deletedPhotosWaitInRecentlyDeletedThenComeBackOrGo() async throws {
+        let e = try Env()
+        try e.lib.addJPEG("a/IMG_1.jpg")
+        try e.lib.addSidecar("a/IMG_1.xmp")
+        try e.lib.addJPEG("a/IMG_2.jpg")
+        _ = await e.library.initialSync()
+        let trash = FileManager.default.temporaryDirectory.appendingPathComponent("loupe-trash-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: trash, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: trash) }
+        await e.library.setTrashItem { url in
+            let to = trash.appendingPathComponent(UUID().uuidString + "-" + url.lastPathComponent)
+            try FileManager.default.moveItem(at: url, to: to)
+            return to
+        }
+        func shown(_ scope: PhotoQuery.Scope) throws -> [String] {
+            try e.library.index.sections(for: PhotoQuery(scope: scope)).flatMap(\.photoIDs)
+                .compactMap { try e.library.index.photo(id: $0)?.key }.sorted()
+        }
+
+        #expect(await e.library.delete([try e.id("a/IMG_1")]).isEmpty)
+        #expect(e.names("a") == ["IMG_2.jpg"])
+        #expect(e.names("Recently Deleted") == [".loupe-deleted.json", "IMG_1.jpg", "IMG_1.xmp"])
+        #expect(try shown(.all) == ["a/IMG_2"])
+        #expect(try shown(.folder("a")) == ["a/IMG_2"])
+        #expect(try shown(.recentlyDeleted) == ["Recently Deleted/IMG_1"])
+
+        #expect(await e.library.recover([try e.id("Recently Deleted/IMG_1")]).isEmpty)
+        #expect(e.names("a") == ["IMG_1.jpg", "IMG_1.xmp", "IMG_2.jpg"])
+        #expect(try shown(.recentlyDeleted).isEmpty)
+
+        // Deleted 31 days ago: the next start's purge sends it to the Trash; a fresh deletion stays.
+        _ = await e.library.deleteLocked([try e.id("a/IMG_1")], now: Date().addingTimeInterval(-31 * 86400))
+        #expect(await e.library.delete([try e.id("a/IMG_2")]).isEmpty)
+        await e.library.purgeRecentlyDeleted()
+        #expect(e.names("Recently Deleted") == [".loupe-deleted.json", "IMG_2.jpg"])
+        #expect(try shown(.recentlyDeleted) == ["Recently Deleted/IMG_2"])
+        #expect(try FileManager.default.contentsOfDirectory(atPath: trash.path).count == 2)  // IMG_1's jpg and xmp
+    }
+
+    @Test func libraryDuplicateCopiesWholeGroupNextToIt() async throws {
+        let e = try Env()
+        try e.lib.addJPEG("a/IMG_1.jpg")
+        try e.lib.addSidecar("a/IMG_1.xmp")
+        try e.lib.addJPEG("a/IMG_1-edited.jpg")
+        _ = await e.library.initialSync()
+        let id = try e.id("a/IMG_1")
+        #expect(await e.library.duplicate([id]).isEmpty)
+        #expect(e.names("a") == [
+            "IMG_1 copy-edited.jpg", "IMG_1 copy.jpg", "IMG_1 copy.xmp", "IMG_1-edited.jpg", "IMG_1.jpg", "IMG_1.xmp"])
+        #expect(try e.library.index.photo(key: "a/IMG_1 copy") != nil)
+        #expect(try e.library.index.photo(key: "a/IMG_1") != nil)  // the original stays
+        // A second copy doesn't collide with the first.
+        #expect(await e.library.duplicate([id]).isEmpty)
+        #expect(e.exists("a/IMG_1 copy (1).jpg") && e.exists("a/IMG_1 copy (1).xmp"))
+        #expect(try e.library.index.photo(key: "a/IMG_1 copy (1)") != nil)
+    }
+
     @Test func albumCoverFollowsMove() async throws {
         let e = try Env()
         try e.lib.addJPEG("a/IMG_1.jpg")

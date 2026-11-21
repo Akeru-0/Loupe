@@ -5,7 +5,7 @@ import LoupeCore
 /// notice external sidecar edits. Loupe remembers its edits as `Pending` entries and restores them when a
 /// LightCraft write put the old values back. Pure logic; `Library` stores the entries and applies corrections.
 public enum StaleRevertGuard {
-    /// `field` is `"rating"`, `"favorite"`, `"tag:<t>"` or `"album:<a>"`.
+    /// `field` is `"rating"`, `"favorite"`, `"hidden"`, `"tag:<t>"` or `"album:<a>"`.
     /// `value`/`previous` are the rating number, `"present"` or `"absent"`.
     /// `previous` is what the sidecar held before Loupe's first still-unresolved edit of the field,
     /// i.e. what a stale LightCraft write would put back.
@@ -51,6 +51,9 @@ public enum StaleRevertGuard {
             case .setFavorite(let on):
                 entry = Pending(field: "favorite", value: flag(on), previous: flag(state.isFavorite))
                 state.isFavorite = on
+            case .setHidden(let on):
+                entry = Pending(field: "hidden", value: flag(on), previous: flag(state.isHidden))
+                state.isHidden = on
             case .addTag(let t):
                 entry = Pending(field: "tag:" + t, value: present, previous: flag(contains(state.tags, t)))
                 if !contains(state.tags, t) { state.tags.append(t) }
@@ -129,6 +132,7 @@ public enum StaleRevertGuard {
     private static func currentValue(of field: String, in m: PhotoMetadata) -> String {
         if field == "rating" { return String(m.rating) }
         if field == "favorite" { return flag(m.isFavorite) }
+        if field == "hidden" { return flag(m.isHidden) }
         if let t = field.dropPrefix("tag:") { return flag(contains(m.tags, t)) }
         if let a = field.dropPrefix("album:") { return flag(contains(m.albums, a)) }
         return ""
@@ -138,6 +142,7 @@ public enum StaleRevertGuard {
         let on = p.value == present
         if p.field == "rating" { return Int(p.value).map { .setRating($0) } }
         if p.field == "favorite" { return .setFavorite(on) }
+        if p.field == "hidden" { return .setHidden(on) }
         if let t = p.field.dropPrefix("tag:") { return on ? .addTag(t) : .removeTag(t) }
         if let a = p.field.dropPrefix("album:") { return on ? .addToAlbum(a) : .removeFromAlbum(a) }
         return nil

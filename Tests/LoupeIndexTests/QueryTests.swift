@@ -12,12 +12,12 @@ private func makeIndex() throws -> LibraryIndex {
 @discardableResult
 private func insert(
     _ index: LibraryIndex, _ folder: String = "", _ stem: String, capture: Date? = nil, added: Date = Date(timeIntervalSince1970: 1000),
-    rating: Int = 0, fav: Bool = false, lc: Bool = false, camera: String? = nil, lens: String? = nil,
+    rating: Int = 0, fav: Bool = false, hidden: Bool = false, lc: Bool = false, camera: String? = nil, lens: String? = nil,
     raw: Bool = false, video: Bool = false, tags: [String] = [], albums: [String] = []
 ) throws -> Int64 {
     try index.dbPool.write { db in
         var p = PhotoRecord(locationId: "L", folderPath: folder, stem: stem, stemKey: stem.lowercased(),
-                            captureDate: capture, addedDate: added, rating: rating, isFavorite: fav,
+                            captureDate: capture, addedDate: added, rating: rating, isFavorite: fav, isHidden: hidden,
                             hasLightCraftEdits: lc, cameraModel: camera, lensModel: lens, hasRaw: raw, hasVideo: video)
         try p.insert(db)
         for t in tags { try db.execute(sql: "INSERT INTO photo_tag VALUES (?, ?)", arguments: [p.id, t]) }
@@ -37,6 +37,44 @@ private func utc() -> (Calendar, Locale) {
 }
 
 @Suite struct QueryTests {
+    @Test func importsListImportedPhotosByImportDayNewestFirst() throws {
+        let i = try makeIndex()
+        let day = 86400.0
+        let older = try insert(i, "Photos", "older", capture: Date(timeIntervalSince1970: 1 * day))
+        let newer = try insert(i, "Trip", "newer", capture: Date(timeIntervalSince1970: 2 * day))  // moved into an album
+        _ = try insert(i, "", "mine", capture: Date(timeIntervalSince1970: 3 * day))  // never imported
+        try i.dbPool.write { db in
+            try db.execute(sql: "INSERT OR REPLACE INTO library_meta(key, value) VALUES ('root', '/lib')")
+            for (id, path, sha, at) in [(older, "Photos/older.CR2", "s1", 10 * day), (newer, "Trip/newer.CR2", "s2", 20 * day)] {
+                try db.execute(
+                    sql: "INSERT INTO version(photoId, path, kind, size, modified, isDisplay) VALUES (?, ?, 'raw', 1, 0, 1)",
+                    arguments: [id, path])
+                try db.execute(sql: "INSERT INTO file_hash(path, size, modified, sha256) VALUES (?, 1, 0, ?)",
+                               arguments: ["/lib/" + path, sha])
+                try db.execute(sql: "INSERT INTO import_record(sha256, sourceName, importedAt) VALUES (?, 'x', ?)",
+                               arguments: [sha, at])
+            }
+        }
+        let utc = Calendar(identifier: .gregorian).with(timeZone: TimeZone(identifier: "UTC")!)
+        let sections = try i.sections(for: PhotoQuery(scope: .imports), calendar: utc, locale: Locale(identifier: "en_US"))
+        #expect(sections.map(\.photoIDs) == [[newer], [older]])
+        #expect(sections.map(\.id) == ["1970-01-21", "1970-01-11"])  // by import day, not capture day
+        #expect(sections[0].captureDates == [Date(timeIntervalSince1970: 2 * day)])
+    }
+
+    @Test func hiddenPhotosShowOnlyInHidden() throws {
+        let i = try makeIndex()
+        let shown = try insert(i, "a", "shown", fav: true)
+        let hidden = try insert(i, "a", "hidden", fav: true, hidden: true)
+        func run(_ s: PhotoQuery.Scope) throws -> [Int64] {
+            try i.sections(for: PhotoQuery(scope: s)).flatMap(\.photoIDs)
+        }
+        #expect(try run(.all) == [shown])
+        #expect(try run(.favorites) == [shown])
+        #expect(try run(.folder("a")) == [shown])
+        #expect(try run(.hidden) == [hidden])
+    }
+
     @Test func scopesSelectTheRightPhotos() throws {
         let i = try makeIndex()
         let now = Date(timeIntervalSince1970: 100 * 86400)
@@ -244,5 +282,13 @@ private func utc() -> (Calendar, Locale) {
         #expect(seen.count == 2)
         #expect(seen.first == [first])
         #expect(Set(seen.last ?? []) == [first, second])
+    }
+}
+
+private extension Calendar {
+    func with(timeZone: TimeZone) -> Calendar {
+        var c = self
+        c.timeZone = timeZone
+        return c
     }
 }

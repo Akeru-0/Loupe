@@ -12,6 +12,7 @@ public struct PhotoRecord: Codable, Hashable, Sendable, Identifiable {
     public var addedDate: Date
     public var rating: Int
     public var isFavorite: Bool
+    public var isHidden: Bool
     public var hasLightCraftEdits: Bool
     public var cameraModel: String?
     public var lensModel: String?
@@ -32,7 +33,7 @@ public struct PhotoRecord: Codable, Hashable, Sendable, Identifiable {
 
     public init(
         id: Int64? = nil, locationId: String, folderPath: String, stem: String, stemKey: String,
-        captureDate: Date? = nil, addedDate: Date, rating: Int = 0, isFavorite: Bool = false,
+        captureDate: Date? = nil, addedDate: Date, rating: Int = 0, isFavorite: Bool = false, isHidden: Bool = false,
         hasLightCraftEdits: Bool = false, cameraModel: String? = nil, lensModel: String? = nil,
         hasRaw: Bool = false, hasVideo: Bool = false, sidecarModified: Date? = nil,
         legacySidecarFingerprint: String? = nil, orientationOverride: Int? = nil,
@@ -47,6 +48,7 @@ public struct PhotoRecord: Codable, Hashable, Sendable, Identifiable {
         self.addedDate = addedDate
         self.rating = rating
         self.isFavorite = isFavorite
+        self.isHidden = isHidden
         self.hasLightCraftEdits = hasLightCraftEdits
         self.cameraModel = cameraModel
         self.lensModel = lensModel

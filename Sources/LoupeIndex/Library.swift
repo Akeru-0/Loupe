@@ -46,6 +46,10 @@ public actor Library {
             databaseURL: supportDirectory.appendingPathComponent("index-\(digest.prefix(12)).sqlite"))
         thumbnails = ThumbnailCache(directory: cacheDirectory.appendingPathComponent("thumbs", isDirectory: true))
         scanner = LoupeIndex.Scanner(index: index, location: location, settings: settings)
+        let root = location.rootURL.path
+        try index.dbPool.write { db in
+            try db.execute(sql: "INSERT OR REPLACE INTO library_meta(key, value) VALUES ('root', ?)", arguments: [root])
+        }
     }
 
     // MARK: - Serial section
@@ -76,6 +80,7 @@ public actor Library {
     /// Scans, syncs the metadata stores, then starts watching the root.
     public func start() async -> ScanReport {
         let report = await startWatchingAndSync()
+        await purgeRecentlyDeleted()
         hasStarted = true
         resumeStartWaiters()
         return report
@@ -178,10 +183,10 @@ public actor Library {
         try await index.dbPool.write { [dimensions] db in
             try db.execute(
                 sql: """
-                    UPDATE photo SET rating = ?, isFavorite = ?, hasLightCraftEdits = ?, sidecarModified = ?,
+                    UPDATE photo SET rating = ?, isFavorite = ?, isHidden = ?, hasLightCraftEdits = ?, sidecarModified = ?,
                     orientationOverride = ?, rotation = ? WHERE id = ?
                     """,
-                arguments: [metadata.rating, metadata.isFavorite, metadata.hasLightCraftEdits,
+                arguments: [metadata.rating, metadata.isFavorite, metadata.isHidden, metadata.hasLightCraftEdits,
                             stamp?.timeIntervalSince1970, rotation == nil ? nil : metadata.orientation, rotation, id])
             for (vid, info) in dimensions where info.pixelWidth != nil {
                 try db.execute(sql: "UPDATE version SET pixelWidth = ?, pixelHeight = ? WHERE id = ?",
@@ -278,6 +283,7 @@ public actor Library {
         switch change {
         case .setRating: "rating"
         case .setFavorite: "favorite"
+        case .setHidden: "hidden"
         case .addTag(let t), .removeTag(let t): "tag \(t)"
         case .addToAlbum(let a), .removeFromAlbum(let a): "album \(a)"
         case .rotate: "orientation"
@@ -348,18 +354,27 @@ public actor Library {
     }
 
     private func moveLocked(_ ids: [Int64], toFolder: String) async -> [Int64: any Error] {
+        await moveReportingLocked(ids, toFolder: toFolder).errors
+    }
+
+    /// As `moveLocked`, also saying where each moved photo came from and the stem it has now (a `(n)` suffix may
+    /// have been added).
+    private func moveReportingLocked(
+        _ ids: [Int64], toFolder: String
+    ) async -> (errors: [Int64: any Error], moved: [Int64: (from: String, stem: String)]) {
         var errors: [Int64: any Error] = [:]
+        var report: [Int64: (from: String, stem: String)] = [:]
         let root = location.rootURL
         let given = toFolder.split(separator: "/").map(String.init)
         guard !given.contains(where: { $0 == "." || $0 == ".." }),
             let (components, destURL) = try? LoupeIndex.Scanner.resolveOnDisk(given, under: root)
         else {
             let error = CocoaError(.fileNoSuchFile)
-            return Dictionary(ids.map { ($0, error as any Error) }, uniquingKeysWith: { a, _ in a })
+            return (Dictionary(ids.map { ($0, error as any Error) }, uniquingKeysWith: { a, _ in a }), [:])
         }
         guard !scanner.isIgnored(components, under: root) else {
             let error = CocoaError(.fileWriteNoPermission)
-            return Dictionary(ids.map { ($0, error as any Error) }, uniquingKeysWith: { a, _ in a })
+            return (Dictionary(ids.map { ($0, error as any Error) }, uniquingKeysWith: { a, _ in a }), [:])
         }
         let destKey = components.joined(separator: "/").precomposedStringWithCanonicalMapping
         var rescan: Set<String> = []
@@ -372,7 +387,9 @@ public actor Library {
                 let group = try index.groupFiles(ofPhoto: id, root: root)
                 if FileOperations.sameDirectory(group.folder, destURL) { continue }  // nothing to do
                 let moved = try FileOperations.moveGroup(group, to: destURL, editMarkers: settings.editMarkers)
+                await carryHashes(zip(group.versions, moved.versions).map { ($0.file.url, $1.file.url) })
                 guard let photo else { continue }
+                report[id] = (photo.folderPath, moved.stem)
                 rescan.insert(photo.folderPath)
                 rescan.insert(destKey)
                 let newKey = destKey.isEmpty ? moved.stem : destKey + "/" + moved.stem
@@ -382,6 +399,43 @@ public actor Library {
         }
         await rescanFolders(rescan, carrying: carry)
         updateAlbumCovers(coverMoves)
+        return (errors, report)
+    }
+
+    /// The hash cache (absolute paths) follows files and folders Loupe moves, so Imports keeps finding them.
+    private func carryHashes(_ moves: [(from: URL, to: URL)]) async {
+        guard !moves.isEmpty else { return }
+        try? await index.dbPool.write { db in
+            for move in moves {
+                let old = move.from.path, new = move.to.path
+                try db.execute(
+                    sql: """
+                        UPDATE OR REPLACE file_hash SET path = ? || substr(path, ?) \
+                        WHERE path = ? OR path LIKE ? ESCAPE '\\'
+                        """,
+                    arguments: [new, old.unicodeScalars.count + 1, old, LibraryIndex.escapeLike(old) + "/%"])
+            }
+        }
+    }
+
+    /// Copies whole photo groups next to themselves as "<stem> copy" (see `FileOperations.duplicateGroup`); the copies
+    /// keep the sidecar's rating, tags and flags and are indexed as new photos.
+    public func duplicate(_ ids: [Int64]) async -> [Int64: any Error] {
+        await serialized { await duplicateLocked(ids) }
+    }
+
+    private func duplicateLocked(_ ids: [Int64]) async -> [Int64: any Error] {
+        var errors: [Int64: any Error] = [:]
+        var rescan: Set<String> = []
+        for id in ids {
+            do {
+                guard let photo = try index.photo(id: id) else { throw CocoaError(.fileNoSuchFile) }
+                try FileOperations.duplicateGroup(
+                    try index.groupFiles(ofPhoto: id, root: location.rootURL), editMarkers: settings.editMarkers)
+                rescan.insert(photo.folderPath)
+            } catch { errors[id] = error }
+        }
+        await rescanFolders(rescan)
         return errors
     }
 
@@ -409,6 +463,106 @@ public actor Library {
         }
         await rescanFolders(rescan)
         return (errors, trashed)
+    }
+
+    // MARK: - Recently Deleted
+
+    /// Deletes photos the way the app does: their files move into the Recently Deleted folder at the root, where
+    /// they stay `LibrarySettings.recentlyDeletedDays` days (see `purgeRecentlyDeleted`) and can be recovered.
+    /// Photos already in it are left alone.
+    public func delete(_ ids: [Int64]) async -> [Int64: any Error] {
+        await serialized { await deleteLocked(ids, now: Date()) }
+    }
+
+    func deleteLocked(_ ids: [Int64], now: Date) async -> [Int64: any Error] {
+        let folder = LibrarySettings.recentlyDeletedFolderName
+        let deletedURL = location.rootURL.appendingPathComponent(folder, isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(at: deletedURL, withIntermediateDirectories: true)
+        } catch {
+            return Dictionary(ids.map { ($0, error as any Error) }, uniquingKeysWith: { a, _ in a })
+        }
+        let live = ids.filter { id in (try? index.photo(id: id)).flatMap { $0 }.map { !Self.isDeleted($0) } ?? true }
+        let (errors, moved) = await moveReportingLocked(live, toFolder: folder)
+        var catalog = DeletedCatalog.load(in: deletedURL)
+        for (_, m) in moved { catalog.entries[PhotoGrouper.stemKey(m.stem)] = .init(folder: m.from, deletedAt: now) }
+        catalog.save(in: deletedURL)
+        return errors
+    }
+
+    /// Moves deleted photos back to the album they were deleted from (recreated if it is gone; Unsorted if it can't
+    /// be), with all their files.
+    public func recover(_ ids: [Int64]) async -> [Int64: any Error] {
+        await serialized { await recoverLocked(ids) }
+    }
+
+    private func recoverLocked(_ ids: [Int64]) async -> [Int64: any Error] {
+        let root = location.rootURL
+        let deletedURL = root.appendingPathComponent(LibrarySettings.recentlyDeletedFolderName, isDirectory: true)
+        var catalog = DeletedCatalog.load(in: deletedURL)
+        var byFolder: [String: [Int64]] = [:]
+        var keys: [Int64: String] = [:]
+        for id in ids {
+            guard let photo = try? index.photo(id: id), Self.isDeleted(photo) else { continue }
+            let key = PhotoGrouper.stemKey(photo.stem)
+            keys[id] = key
+            var folder = catalog.entries[key]?.folder ?? ""
+            let parts = folder.split(separator: "/").map(String.init)
+            if !folder.isEmpty, (try? LoupeIndex.Scanner.resolveOnDisk(parts, under: root)) == nil {
+                let url = parts.reduce(root) { $0.appendingPathComponent($1, isDirectory: true) }
+                if scanner.isIgnored(parts, under: root)
+                    || (try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)) == nil
+                {
+                    folder = ""
+                }
+            }
+            byFolder[folder, default: []].append(id)
+        }
+        var errors: [Int64: any Error] = [:]
+        for (folder, group) in byFolder.sorted(by: { $0.key < $1.key }) {
+            let result = await moveReportingLocked(group, toFolder: folder)
+            errors.merge(result.errors) { a, _ in a }
+            for id in result.moved.keys { if let key = keys[id] { catalog.entries[key] = nil } }
+        }
+        catalog.save(in: deletedURL)
+        return errors
+    }
+
+    /// Delete Permanently: deleted photos go to the system Trash.
+    public func deletePermanently(_ ids: [Int64]) async -> [Int64: any Error] {
+        await serialized {
+            let deletedURL = location.rootURL.appendingPathComponent(
+                LibrarySettings.recentlyDeletedFolderName, isDirectory: true)
+            var keys: [Int64: String] = [:]
+            for id in ids { if let photo = try? index.photo(id: id) { keys[id] = PhotoGrouper.stemKey(photo.stem) } }
+            let (errors, _) = await trashLocked(ids)
+            var catalog = DeletedCatalog.load(in: deletedURL)
+            for (id, key) in keys where errors[id] == nil { catalog.entries[key] = nil }
+            catalog.save(in: deletedURL)
+            return errors
+        }
+    }
+
+    /// Photos deleted more than `LibrarySettings.recentlyDeletedDays` days before `now` go to the system Trash.
+    /// Runs after the initial scan.
+    func purgeRecentlyDeleted(now: Date = Date()) async {
+        let deletedURL = location.rootURL.appendingPathComponent(LibrarySettings.recentlyDeletedFolderName, isDirectory: true)
+        let catalog = DeletedCatalog.load(in: deletedURL)
+        let limit = now.addingTimeInterval(-Double(LibrarySettings.recentlyDeletedDays) * 86400)
+        let expired = Set(catalog.entries.filter { $0.value.deletedAt < limit }.keys)
+        guard !expired.isEmpty else { return }
+        let folder = LibrarySettings.recentlyDeletedFolderName.precomposedStringWithCanonicalMapping
+        let ids = ((try? await photoIDs(inFolder: folder)) ?? []).filter { id in
+            (try? index.photo(id: id)).flatMap { $0 }.map { expired.contains(PhotoGrouper.stemKey($0.stem)) } ?? false
+        }
+        let errors = await deletePermanently(ids)
+        if !errors.isEmpty { log("Couldn't empty \(errors.count) photos from Recently Deleted") }
+    }
+
+    /// Whether the photo is in Recently Deleted.
+    public static func isDeleted(_ photo: PhotoRecord) -> Bool {
+        let folder = LibrarySettings.recentlyDeletedFolderName
+        return photo.folderPath == folder || photo.folderPath.hasPrefix(folder + "/")
     }
 
     /// Where `trash` sends each file: the system Trash, a temp dir in tests.
@@ -528,6 +682,7 @@ public actor Library {
             }
             try fm.moveItem(at: url, to: newURL)  // fails if the destination exists
         }
+        await carryHashes([(url, newURL)])
 
         // Rescan is not recursive: a full scan drops the old paths and picks up the new ones.
         var scanned: [Int64] = []

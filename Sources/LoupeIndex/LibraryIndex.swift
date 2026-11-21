@@ -71,7 +71,7 @@ public final class LibraryIndex: Sendable {
             let tags = try String.fetchAll(db, sql: "SELECT name FROM photo_tag WHERE photoId = ? ORDER BY name", arguments: [id])
             let albums = try String.fetchAll(db, sql: "SELECT name FROM photo_album WHERE photoId = ? ORDER BY name", arguments: [id])
             return PhotoMetadata(rating: p.rating, tags: tags, albums: albums,
-                                 isFavorite: p.isFavorite, hasLightCraftEdits: p.hasLightCraftEdits,
+                                 isFavorite: p.isFavorite, isHidden: p.isHidden, hasLightCraftEdits: p.hasLightCraftEdits,
                                  orientation: p.orientationOverride)
         }
     }

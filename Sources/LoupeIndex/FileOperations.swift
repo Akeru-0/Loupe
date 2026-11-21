@@ -99,6 +99,34 @@ public enum FileOperations {
         return result
     }
 
+    /// Copies every file of the group (sidecars too) next to it as "<stem> copy", or "<stem> copy (n)" when that is
+    /// taken; all or nothing. Returns the copy's stem.
+    @discardableResult
+    public static func duplicateGroup(
+        _ group: PhotoGroup, editMarkers: [String] = LibrarySettings(rootPath: "").editMarkers
+    ) throws -> String {
+        let g = try completing(group)
+        let fm = FileManager.default
+        let copyStem = g.stem + " copy"
+        let files = g.allFiles
+        let names = try files.map { try replacingLeadingStem(in: $0.lastPathComponent, key: g.stemKey, with: copyStem) }
+        let n = try freeStemSuffix(for: names, stem: copyStem, in: g.folder, editMarkers: editMarkers)
+        let targets = try zip(files, names).map { file, name in
+            (from: file, to: g.folder.appendingPathComponent(try suffixedName(name, stem: copyStem, suffix: n)))
+        }
+        var copied: [URL] = []
+        do {
+            for t in targets {
+                try fm.copyItem(at: t.from, to: t.to)  // fails if the destination exists; never replaces
+                copied.append(t.to)
+            }
+        } catch {
+            for url in copied.reversed() { try? fm.removeItem(at: url) }
+            throw error
+        }
+        return suffixedStem(copyStem, n)
+    }
+
     /// Moves one file to the Trash and returns where it ended up.
     public typealias TrashItem = @Sendable (URL) throws -> URL
 

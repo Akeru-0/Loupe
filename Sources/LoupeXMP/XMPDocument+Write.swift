@@ -71,6 +71,8 @@ private struct Editor {
         case .setRating(let n): setRating(min(max(n, 0), 5))
         case .setFavorite(let on):
             if on { add(Keywords.favorite, dc, "subject") } else { remove({ $0 == Keywords.favorite }, dc, "subject") }
+        case .setHidden(let on):
+            if on { add(Keywords.hidden, dc, "subject") } else { remove({ $0 == Keywords.hidden }, dc, "subject") }
         case .addTag(let t): add(t, dc, "subject")
         case .removeTag(let t):
             remove({ $0 == t }, dc, "subject")

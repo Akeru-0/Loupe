@@ -7,4 +7,6 @@ enum XMPNamespaces {
     static let lr = "http://ns.adobe.com/lightroom/1.0/"
     static let lc = "http://ns.lightcraft.app/lc/1.0/"
     static let tiff = "http://ns.adobe.com/tiff/1.0/"
+    /// IPTC Extension: `PersonInImage` (people named in the photo, as osxphotos and Photos exports write them).
+    static let iptcExt = "http://iptc.org/std/Iptc4xmpExt/2008-02-29/"
 }

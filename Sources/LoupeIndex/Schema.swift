@@ -112,6 +112,66 @@ enum Schema {
                 """)
             try fillLastEditedAt(db)
         }
+        migrator.registerMigration("v7") { db in
+            // Hide: the sidecar's "Hidden" keyword. Photos with a sidecar are re-read once so it is filled in.
+            try db.execute(sql: "ALTER TABLE photo ADD COLUMN isHidden BOOLEAN NOT NULL DEFAULT 0")
+            try markSidecarPhotosForRescan(db)
+        }
+        migrator.registerMigration("v8") { db in
+            // library_meta: the root path, so library-relative paths can be matched with file_hash's absolute ones
+            // (Imports). upload_state: what the cloud upload copied, by root-relative path, while size and mtime
+            // still match. upload_failure: files whose last upload failed (Unable to Upload).
+            try db.execute(sql: """
+                CREATE TABLE library_meta (key TEXT PRIMARY KEY NOT NULL, value TEXT NOT NULL);
+                CREATE TABLE upload_state (
+                    path TEXT PRIMARY KEY NOT NULL,
+                    size INTEGER NOT NULL,
+                    modified DOUBLE NOT NULL,
+                    uploadedAt DOUBLE NOT NULL
+                );
+                CREATE TABLE upload_failure (
+                    path TEXT PRIMARY KEY NOT NULL,
+                    photoId INTEGER NOT NULL REFERENCES photo(id) ON DELETE CASCADE,
+                    message TEXT NOT NULL,
+                    failedAt DOUBLE NOT NULL
+                );
+                CREATE INDEX upload_failure_photoId ON upload_failure(photoId);
+                """)
+        }
+        migrator.registerMigration("v9") { db in
+            // Faces and pets (LoupeFaces): which file each photo was scanned from (a changed file is scanned
+            // again), what was found (box in the shown photo, 0…1 from the top left; the recognition vector), and
+            // the groups they fall into. A group's id is its first face's.
+            try db.execute(sql: """
+                CREATE TABLE face_scan (
+                    photoId INTEGER PRIMARY KEY NOT NULL REFERENCES photo(id) ON DELETE CASCADE,
+                    versionPath TEXT NOT NULL,
+                    modified DOUBLE NOT NULL,
+                    rotation INTEGER,
+                    scannedAt DOUBLE NOT NULL
+                );
+                CREATE TABLE face (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    photoId INTEGER NOT NULL REFERENCES photo(id) ON DELETE CASCADE,
+                    kind TEXT NOT NULL,
+                    x DOUBLE NOT NULL, y DOUBLE NOT NULL, w DOUBLE NOT NULL, h DOUBLE NOT NULL,
+                    embedding BLOB NOT NULL,
+                    groupId INTEGER
+                );
+                CREATE INDEX face_photoId ON face(photoId);
+                CREATE INDEX face_groupId ON face(groupId);
+                CREATE TABLE face_group (
+                    id INTEGER PRIMARY KEY NOT NULL,
+                    kind TEXT NOT NULL,
+                    photoCount INTEGER NOT NULL,
+                    coverFaceId INTEGER NOT NULL
+                );
+                """)
+        }
+        migrator.registerMigration("v10") { db in
+            // The name given in People (from `.loupe/people.json`, set by each regrouping).
+            try db.execute(sql: "ALTER TABLE face_group ADD COLUMN name TEXT")
+        }
         return migrator
     }
 

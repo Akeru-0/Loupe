@@ -361,7 +361,7 @@ public final class Scanner: Sendable {
         let photo = PhotoRecord(
             id: existingId, locationId: location.id, folderPath: folder, stem: group.stem, stemKey: group.stemKey,
             captureDate: captureDate, addedDate: display.file.created, rating: metadata.rating,
-            isFavorite: metadata.isFavorite, hasLightCraftEdits: metadata.hasLightCraftEdits,
+            isFavorite: metadata.isFavorite, isHidden: metadata.isHidden, hasLightCraftEdits: metadata.hasLightCraftEdits,
             cameraModel: camera, lensModel: lens,
             hasRaw: group.versions.contains { $0.kind == .raw },
             hasVideo: group.versions.contains { $0.kind == .video || $0.kind == .live },

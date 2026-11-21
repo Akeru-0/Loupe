@@ -33,6 +33,7 @@ public struct XMPDocument {
         var orientation: Int?
         var subjects: [String] = []
         var hierarchical: [String] = []
+        var persons: [String] = []
         var hasEdits = false
         var hasLC = false
 
@@ -50,6 +51,8 @@ public struct XMPDocument {
                     subjects += Self.listItems(child)
                 } else if Self.isElement(child, XMPNamespaces.lr, "hierarchicalSubject") {
                     hierarchical += Self.listItems(child)
+                } else if Self.isElement(child, XMPNamespaces.iptcExt, "PersonInImage") {
+                    persons += Self.listItems(child)
                 } else if Self.isElement(child, XMPNamespaces.lc, "settings"),
                     !(child.stringValue ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 {
@@ -61,6 +64,7 @@ public struct XMPDocument {
         hasLightCraftData = hasLC
         var albums: [String] = []
         var isFavorite = false
+        var isHidden = false
         for item in subjects + hierarchical {
             guard item.hasPrefix(Keywords.albumPrefix) else { continue }
             let name = String(item.dropFirst(Keywords.albumPrefix.count))
@@ -69,11 +73,14 @@ public struct XMPDocument {
         }
         albums = Self.unique(albums)
 
-        // LightCraft splits `Albums|X` into the flat dc:subject items `Albums` and `X`; those are not tags.
-        let albumKeys = Set(albums.map(Self.key)).union([Self.key("Albums")])
+        // LightCraft splits `Albums|X` into the flat dc:subject items `Albums` and `X`; those are not tags. Nor are the
+        // people named in the photo, which osxphotos also lists in dc:subject (they would flood Tags; Faces reads
+        // them from PersonInImage).
+        let albumKeys = Set(albums.map(Self.key)).union([Self.key("Albums")]).union(persons.map(Self.key))
         var tags: [String] = []
         for item in subjects {
             if item == Keywords.favorite { isFavorite = true; continue }
+            if item == Keywords.hidden { isHidden = true; continue }
             if item.hasPrefix(Keywords.albumPrefix) || albumKeys.contains(Self.key(item)) { continue }
             tags.append(item)
         }
@@ -81,7 +88,7 @@ public struct XMPDocument {
         let valid = rating.flatMap { (1...5).contains($0) ? $0 : nil } ?? 0
         metadata = PhotoMetadata(
             rating: valid, tags: Self.unique(tags), albums: albums,
-            isFavorite: isFavorite, hasLightCraftEdits: hasEdits, orientation: orientation)
+            isFavorite: isFavorite, isHidden: isHidden, hasLightCraftEdits: hasEdits, orientation: orientation)
     }
 
     // MARK: - Helpers

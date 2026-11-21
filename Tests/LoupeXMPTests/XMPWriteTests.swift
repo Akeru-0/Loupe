@@ -94,6 +94,29 @@ private func tagStrings(_ tag: CGImageMetadataTag) -> [String] {
         #expect(try canonicalWithoutKeywords(out) == canonicalWithoutKeywords(input))
     }
 
+    @Test func peopleNamedInThePhotoAreNotTags() throws {
+        let xmp = """
+            <x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+            <rdf:Description rdf:about="" xmlns:dc="http://purl.org/dc/elements/1.1/"
+              xmlns:Iptc4xmpExt="http://iptc.org/std/Iptc4xmpExt/2008-02-29/">
+            <dc:subject><rdf:Bag><rdf:li>Iceland</rdf:li><rdf:li>Anna Nováková</rdf:li><rdf:li>Albums|Trip</rdf:li>
+              <rdf:li>Favorite</rdf:li></rdf:Bag></dc:subject>
+            <Iptc4xmpExt:PersonInImage><rdf:Bag><rdf:li>Anna Nováková</rdf:li></rdf:Bag></Iptc4xmpExt:PersonInImage>
+            </rdf:Description></rdf:RDF></x:xmpmeta>
+            """
+        let m = try XMPDocument(data: Data(xmp.utf8)).metadata
+        #expect(m.tags == ["Iceland"] && m.albums == ["Trip"] && m.isFavorite)
+    }
+
+    @Test func hiddenIsAKeywordNotATag() throws {
+        let input = try fixtureData("lightcraft-two-descriptions")
+        let hidden = try apply([.setHidden(true), .addTag("Iceland")], to: input)
+        let m = try XMPDocument(data: hidden).metadata
+        #expect(m.isHidden && m.tags == ["Iceland"])
+        let shown = try XMPDocument(data: try apply([.setHidden(false)], to: hidden)).metadata
+        #expect(!shown.isHidden && shown.tags == ["Iceland"])
+    }
+
     @Test func appleParserAgrees() throws {
         let input = try fixtureData("lightcraft-two-descriptions")
         let out = try apply([.setRating(4), .addTag("Iceland"), .addToAlbum("Trip"), .setFavorite(true)], to: input)

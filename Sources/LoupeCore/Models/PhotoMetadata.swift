@@ -4,6 +4,8 @@ public struct PhotoMetadata: Equatable, Sendable {
     public var tags: [String]
     public var albums: [String]
     public var isFavorite: Bool
+    /// Hidden photos are left out of every view but Hidden.
+    public var isHidden: Bool
     public var hasLightCraftEdits: Bool
     /// The sidecar's `tiff:Orientation` (1…8), or nil when it has none and the file's own orientation applies.
     public var orientation: Int?
@@ -13,6 +15,7 @@ public struct PhotoMetadata: Equatable, Sendable {
         tags: [String] = [],
         albums: [String] = [],
         isFavorite: Bool = false,
+        isHidden: Bool = false,
         hasLightCraftEdits: Bool = false,
         orientation: Int? = nil
     ) {
@@ -20,6 +23,7 @@ public struct PhotoMetadata: Equatable, Sendable {
         self.tags = tags
         self.albums = albums
         self.isFavorite = isFavorite
+        self.isHidden = isHidden
         self.hasLightCraftEdits = hasLightCraftEdits
         self.orientation = orientation
     }
@@ -28,6 +32,7 @@ public struct PhotoMetadata: Equatable, Sendable {
 public enum MetadataChange: Hashable, Sendable, Codable {
     case setRating(Int)
     case setFavorite(Bool)
+    case setHidden(Bool)
     case addTag(String)
     case removeTag(String)
     case addToAlbum(String)
@@ -38,5 +43,6 @@ public enum MetadataChange: Hashable, Sendable, Codable {
 
 public enum Keywords {
     public static let favorite = "Favorite"
+    public static let hidden = "Hidden"
     public static let albumPrefix = "Albums|"
 }
