@@ -1,4 +1,5 @@
 import AppKit
+import LoupeCore
 import Testing
 @testable import LoupeUI
 
@@ -31,5 +32,14 @@ import Testing
         ])
         #expect(TagEditorModel.tokens(perPhoto: []).isEmpty)
         #expect(TagEditorModel.tokens(perPhoto: [["Tag 10", "Tag 2"]]).map(\.name) == ["Tag 2", "Tag 10"])
+    }
+
+    @MainActor @Test func shiftClickSelectsEveryPhotoBetweenRowByRowAcrossDays() {
+        let sections = [PhotoSection(id: "2026-11-20", title: "", photoIDs: [1, 2, 3, 4, 5]),
+                        PhotoSection(id: "2026-11-21", title: "", photoIDs: [6, 7, 8])]
+        #expect(PhotoGridController.range(from: 2, to: 7, in: sections) == [2, 3, 4, 5, 6, 7])
+        #expect(PhotoGridController.range(from: 7, to: 2, in: sections) == [2, 3, 4, 5, 6, 7])  // backwards too
+        #expect(PhotoGridController.range(from: 4, to: 4, in: sections) == [4])
+        #expect(PhotoGridController.range(from: 99, to: 4, in: sections) == nil)  // the anchor scrolled out of view
     }
 }

@@ -391,16 +391,44 @@ import Observation
         focusID = targetID
         var ids: [Int64] = [targetID]
         if extend, let anchorID {
-            let flat = shownSections.flatMap(\.photoIDs)
-            if let a = flat.firstIndex(of: anchorID), let b = flat.firstIndex(of: targetID) {
-                ids = Array(flat[min(a, b)...max(a, b)])
-            }
+            ids = Self.range(from: anchorID, to: targetID, in: shownSections) ?? ids
         } else {
             anchorID = targetID
         }
         collectionView.selectionIndexPaths = Set(ids.compactMap { dataSource.indexPath(for: $0) })
         selectionDidChange()
         collectionView.scrollToItems(at: [target], scrollPosition: .nearestHorizontalEdge)
+    }
+
+    /// The photos from `anchor` to `target` in grid order (row by row, across the date sections), or nil when
+    /// either isn't shown.
+    static func range(from anchor: Int64, to target: Int64, in sections: [PhotoSection]) -> [Int64]? {
+        let flat = sections.flatMap(\.photoIDs)
+        guard let a = flat.firstIndex(of: anchor), let b = flat.firstIndex(of: target) else { return nil }
+        return Array(flat[min(a, b)...max(a, b)])
+    }
+
+    /// ⇧-click: selects every photo from the last one clicked (the anchor, which stays) to this one, as Photos and
+    /// Finder do. Returns false when there's nothing to extend from, for the plain click.
+    func shiftClicked(_ event: NSEvent) -> Bool {
+        let point = collectionView.convert(event.locationInWindow, from: nil)
+        guard let path = collectionView.indexPathForItem(at: point), let id = dataSource.itemIdentifier(for: path),
+            let anchorID, let ids = Self.range(from: anchorID, to: id, in: shownSections)
+        else { return false }
+        focusID = id
+        collectionView.selectionIndexPaths = Set(ids.compactMap { dataSource.indexPath(for: $0) })
+        selectionDidChange()
+        return true
+    }
+
+    /// A plain or ⌘-click on a photo makes it the anchor the next ⇧-click extends from.
+    func clicked(_ event: NSEvent) {
+        let point = collectionView.convert(event.locationInWindow, from: nil)
+        guard let path = collectionView.indexPathForItem(at: point), let id = dataSource.itemIdentifier(for: path),
+            model.selection.contains(id)
+        else { return }
+        anchorID = id
+        focusID = id
     }
 
     // MARK: - Keys and mouse
@@ -874,7 +902,10 @@ final class GridCollectionView: NSCollectionView {
     }
 
     override func mouseDown(with event: NSEvent) {
-        super.mouseDown(with: event)
+        let mods = event.modifierFlags.intersection([.shift, .command, .option, .control])
+        if mods == .shift, event.clickCount == 1, grid?.shiftClicked(event) == true { return }
+        super.mouseDown(with: event)  // tracks until the button is up (a drag or a rubber band included)
+        if event.clickCount == 1, mods.isEmpty || mods == .command { grid?.clicked(event) }
         if event.clickCount == 2 { grid?.doubleClicked(event) }
     }
 
