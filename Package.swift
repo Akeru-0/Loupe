@@ -26,9 +26,15 @@ let package = Package(
             name: "LoupeImport",
             dependencies: ["LoupeCore", "LoupeMedia", "LoupeIndex", .product(name: "GRDB", package: "GRDB.swift")]
         ),
+        // ONNX Runtime's C API, loaded at run time from Homebrew (never linked): see include/loupe_ort.h.
+        .target(name: "COnnxRuntime"),
+        .target(
+            name: "LoupeFaces",
+            dependencies: ["LoupeCore", "LoupeMedia", "LoupeIndex", "COnnxRuntime", .product(name: "GRDB", package: "GRDB.swift")]
+        ),
         .target(
             name: "LoupeUI",
-            dependencies: ["LoupeCore", "LoupeXMP", "LoupeMedia", "LoupeIndex", "LoupeFeatures", "LoupeImport"],
+            dependencies: ["LoupeCore", "LoupeXMP", "LoupeMedia", "LoupeIndex", "LoupeFeatures", "LoupeImport", "LoupeFaces"],
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
         .target(name: "LoupeTestSupport", dependencies: ["LoupeCore"]),
@@ -40,6 +46,7 @@ let package = Package(
         .testTarget(name: "LoupeCoreTests", dependencies: ["LoupeCore"]),
         .testTarget(name: "LoupeFeaturesTests", dependencies: ["LoupeFeatures", "LoupeTestSupport"]),
         .testTarget(name: "LoupeImportTests", dependencies: ["LoupeImport", "LoupeTestSupport"]),
+        .testTarget(name: "LoupeFacesTests", dependencies: ["LoupeFaces", "LoupeIndex", "LoupeTestSupport"]),
         .testTarget(name: "LoupeIndexTests", dependencies: ["LoupeIndex", "LoupeTestSupport"]),
         .testTarget(name: "LoupeMediaTests", dependencies: ["LoupeMedia", "LoupeTestSupport"]),
         .testTarget(name: "LoupeUITests", dependencies: ["LoupeUI", "LoupeImport", "LoupeTestSupport"]),
