@@ -7,10 +7,13 @@ public struct ImportPlan: Sendable {
     public var groups: [PhotoGroup]
     /// Root-relative; `""` is the root (Unsorted). Missing folders are created, e.g. `2026/Card test`.
     public var destinationFolder: String
+    /// Delete each group's source files once its copies are verified and in place in the library.
+    public var deleteSources: Bool
 
-    public init(groups: [PhotoGroup], destinationFolder: String) {
+    public init(groups: [PhotoGroup], destinationFolder: String, deleteSources: Bool = false) {
         self.groups = groups
         self.destinationFolder = destinationFolder
+        self.deleteSources = deleteSources
     }
 }
 
@@ -37,6 +40,10 @@ public struct ImportResult: Sendable {
     public var failed: [URL: any Error] = [:]
     /// The destination folder as it is spelled on disk.
     public var destinationFolder = ""
+    /// With `ImportPlan.deleteSources`: the source files deleted after their group was imported, and those that
+    /// could not be (they stay on the card; their copies are in the library all the same).
+    public var deletedSources: [URL] = []
+    public var sourceDeleteFailures: [URL: any Error] = [:]
 
     public init(
         imported: [String] = [], skipped: [URL] = [], failed: [URL: any Error] = [:], destinationFolder: String = ""
@@ -78,7 +85,8 @@ public enum ImportError: LocalizedError {
 
 /// Copies photo groups from a card into the library. Each group is all-or-nothing: every file is copied to a
 /// hidden temp name, re-read and compared by SHA-256, and only then renamed into place, with a `(n)` suffix
-/// rather than ever replacing a file. Sources are only ever opened for reading.
+/// rather than ever replacing a file. Sources are only ever opened for reading, unless the plan asks for them to be
+/// deleted: then a group's source files are deleted only after all its copies are verified and in place.
 public final class Importer: Sendable {
     /// Copies `source` to the new file `temp` and returns the SHA-256 of the bytes read from `source`.
     typealias Copier = @Sendable (_ source: URL, _ temp: URL) throws -> String
@@ -189,6 +197,16 @@ public final class Importer: Sendable {
                         throw CancellationError()
                     }
                     result.imported += names.map { relative.isEmpty ? $0 : relative + "/" + $0 }
+                    if plan.deleteSources {
+                        for url in files {
+                            do {
+                                try FileManager.default.removeItem(at: url)
+                                result.deletedSources.append(url)
+                            } catch {
+                                result.sourceDeleteFailures[url] = error
+                            }
+                        }
+                    }
                 } catch {
                     let fm = FileManager.default
                     for url in staged where fm.fileExists(atPath: url.path) { try? fm.removeItem(at: url) }

@@ -134,6 +134,31 @@ private func makeLibrary(_ library: IndexedLibrary) throws -> Library {
         #expect(try ImportRecord.all(in: library.index).map(\.sourceName) == ["IMG_2.CR2"])
     }
 
+    @Test func deleteSourcesRemovesOnlyVerifiedGroupsFromTheCard() async throws {
+        let library = try IndexedLibrary()
+        let volumes = try FakeVolumes()
+        let (_, groups) = try makeCard(volumes)
+        let dir = volumes.url.appendingPathComponent("EOS_DIGITAL/DCIM/100CANON")
+        let raw2 = try sha(dir.appendingPathComponent("IMG_2.CR2"))
+        // IMG_1's JPEG copy is corrupted, so IMG_1 fails and must stay on the card whole.
+        let corrupting: Importer.Copier = { source, temp in
+            let digest = try Importer.streamCopy(source, temp)
+            if source.lastPathComponent == "IMG_1.JPG" {
+                var data = try Data(contentsOf: temp)
+                data[10] ^= 0xFF
+                try data.write(to: temp)
+            }
+            return digest
+        }
+        let result = try await importer(library, copier: corrupting)
+            .run(ImportPlan(groups: groups, destinationFolder: "", deleteSources: true), progress: { _ in })
+        #expect(result.imported == ["IMG_2.CR2"])
+        #expect(result.deletedSources.map(\.lastPathComponent) == ["IMG_2.CR2"])
+        #expect(result.sourceDeleteFailures.isEmpty)
+        #expect(allNames(dir) == ["IMG_1.CR2", "IMG_1.JPG"])
+        #expect(try sha(library.root.appendingPathComponent("IMG_2.CR2")) == raw2)
+    }
+
     @Test func notEnoughSpaceThrowsBeforeCopying() async throws {
         let library = try IndexedLibrary()
         let volumes = try FakeVolumes()
