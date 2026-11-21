@@ -23,7 +23,9 @@ if [ -n "$VERSION" ]; then /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersion
 if [ -n "$BUILD" ]; then /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD" "$APP/Contents/Info.plist"; fi
 
 if [ -z "$SIGN_IDENTITY" ]; then
-  if security find-identity -v -p codesigning | grep -q '"Loupe"'; then SIGN_IDENTITY="Loupe"; else SIGN_IDENTITY="-"; fi
+  # A self-signed certificate is listed as not trusted; codesign signs with it all the same (by its fingerprint).
+  SIGN_IDENTITY=$(security find-identity -p codesigning | awk '/"Loupe"/ { print $2; exit }')
+  [ -n "$SIGN_IDENTITY" ] || SIGN_IDENTITY="-"
 fi
 if [ "$SIGN_IDENTITY" = "-" ]; then
   echo "warning: signing ad hoc; create the \"Loupe\" certificate (see scripts/release.sh) so updates keep permissions" >&2
