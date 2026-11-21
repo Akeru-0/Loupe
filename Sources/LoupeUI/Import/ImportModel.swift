@@ -126,7 +126,7 @@ extension PhotoGroup {
     @ObservationIgnored private var loadTask: Task<Void, Never>?
     @ObservationIgnored private var cancelImport: (() -> Void)?
 
-    /// `albums`: the album paths that exist now; a remembered album that is gone falls back to Unsorted.
+    /// `albums`: the album paths that exist now; a remembered album that is gone falls back to Photos.
     init(
         card: Card, engine: ImportEngine, preferences: any PreferenceStore, albums: Set<String>? = nil,
         thumbnails: ThumbnailLoader? = nil, onError: @escaping (any Error) -> Void = { _ in }

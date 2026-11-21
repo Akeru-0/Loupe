@@ -33,7 +33,7 @@ private func set() -> DuplicateSet {
         #expect(DuplicatesModel.summary(sets: 1, reclaimable: 0).hasPrefix("1 duplicate set, "))
         #expect(DuplicatesModel.summary(sets: 3, reclaimable: 5_000_000).hasPrefix("3 duplicate sets, "))
         #expect(DuplicatesModel.summary(sets: 3, reclaimable: 5_000_000).hasSuffix(" reclaimable"))
-        #expect(DuplicatesModel.folderName("") == "Unsorted")
+        #expect(DuplicatesModel.folderName("") == "Library")
         #expect(DuplicatesModel.folderName("Trip:2024/Day 1") == "Trip/2024 ▸ Day 1")
         let kept = set().copies[1]
         #expect(DuplicatesModel.trashQuestion(count: 1) == "Move 1 photo to Trash?")

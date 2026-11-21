@@ -205,6 +205,10 @@ extension LibraryIndex {
                 WHERE f.photoId = p.id AND g.photoCount >= ?)
                 """)
             args.append(LibraryIndex.peopleMinPhotos)
+        case .smartAlbum(let album):
+            let (sql, smartArgs) = smartAlbumSQL(album, now: now)
+            clauses.append(sql)
+            args += smartArgs
         case .faceGroup(let id):
             clauses.append("EXISTS (SELECT 1 FROM face f WHERE f.photoId = p.id AND f.groupId = ?)")
             args.append(id)

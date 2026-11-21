@@ -27,6 +27,8 @@ struct SidebarView: View {
             }
         }
         .listStyle(.sidebar)
+        // Right-click where there's no item (rows and headers have their own menus).
+        .contextMenu { SidebarNewItems(model: model) }
         .safeAreaInset(edge: .bottom, spacing: 0) { footer }
     }
 
@@ -37,9 +39,7 @@ struct SidebarView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
             .contextMenu {
-                if group.id == "albums" {
-                    Button("New Album…") { Task { await model.newAlbum(in: "", select: true) } }
-                }
+                SidebarNewItems(model: model)
             }
             .onDrag {
                 model.draggedSectionID = group.id

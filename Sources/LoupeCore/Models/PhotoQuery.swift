@@ -36,6 +36,8 @@ public struct PhotoQuery: Hashable, Sendable {
         case people
         /// Photos showing one person or pet: a face group (`face_group.id`).
         case faceGroup(Int64)
+        /// The photos matching a smart album's rules.
+        case smartAlbum(SmartAlbum)
     }
     public enum KindFilter: Hashable, Sendable { case any, hasRaw, withoutRaw, videos, lightCraftEdited }
     public enum SortField: Hashable, Sendable { case captureDate, added, name, rating, edited }

@@ -146,6 +146,8 @@ public struct SidebarGroup: Identifiable, Sendable {
     public var alertMessage: String?
     /// The photos the tag editor (⌘T) is open for.
     public var tagEditorPhotoIDs: [Int64]?
+    /// The smart album sheet's album, while it's open.
+    var smartAlbumEditing: SmartAlbumEditing?
     /// Favorite and display kind of photos the action bar targeted, as last loaded (`reloadActionBar()`).
     var actionFlags: [Int64: ActionFlags] = [:]
     /// The running slideshow (Play), in its own window over the screen.
@@ -673,10 +675,9 @@ public struct SidebarGroup: Identifiable, Sendable {
         }
     }
 
-    /// Shows the album an import went into (`""`: Unsorted).
+    /// Shows the album an import went into; Library for the Photos folder and the top of the library (no album).
     func showImported(folder: String) {
-        selectedItemID = folder.isEmpty ? "unsorted"
-            : folder == LibrarySettings.photosFolderName ? "library"  // not an album: its photos show in Library
+        selectedItemID = folder.isEmpty || folder == LibrarySettings.photosFolderName ? "library"
             : "folder:" + folder.precomposedStringWithCanonicalMapping
     }
 

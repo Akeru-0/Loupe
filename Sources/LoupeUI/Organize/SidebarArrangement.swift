@@ -79,8 +79,11 @@ extension AppModel {
         save(itemOrderByRoot, forKey: Self.itemOrderKey)
     }
 
-    /// Albums and groups (not Unsorted) can get another icon.
-    func canChangeIcon(_ item: SidebarItem) -> Bool { !(item.albumFolder ?? "").isEmpty }
+    /// Albums, groups and smart albums can get another icon.
+    func canChangeIcon(_ item: SidebarItem) -> Bool {
+        if case .smartAlbum = item.scope { return true }
+        return !(item.albumFolder ?? "").isEmpty
+    }
     func icon(of item: SidebarItem) -> String? { iconsByRoot[effectiveSettings.rootPath]?[Self.originalID(item.id)] }
 
     /// `nil` puts the album's own icon back.

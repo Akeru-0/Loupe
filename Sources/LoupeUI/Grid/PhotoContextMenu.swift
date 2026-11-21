@@ -3,7 +3,7 @@ import LoupeCore
 import LoupeIndex
 
 /// The grid's context menu, laid out like Photos': Get Info; Share; Show in Library / Album / Finder; Rotate and the edit
-/// items; Create, Add to, Edit With; Duplicate, Hide, Delete; then the other feature actions and Move to Unsorted.
+/// items; Create, Add to, Edit With; Duplicate, Hide, Delete; then the other feature actions and Remove from Album.
 /// Photos items Loupe has nothing behind (Copy Edits, Live Photo, Shared Album…) are shown disabled.
 @MainActor enum PhotoContextMenu {
     /// `photos`: the selection's records, in `ids` order; `files`: each one's displayed file; `actions`: the feature
@@ -85,7 +85,7 @@ import LoupeIndex
             },
             ClosureMenuItem("Slideshow") { model.startSlideshow() },
         ]))
-        let albumItems = AlbumMenu.items(for: ids, model: model)  // "Add to Album ▸", "Move to Unsorted"
+        let albumItems = AlbumMenu.items(for: ids, model: model)  // "Add to Album ▸", "Remove from Album"
         if let add = albumItems.first {
             add.title = "Add to"
             menu.addItem(add)
@@ -129,17 +129,16 @@ import LoupeIndex
         return [not, submenu(person ? "Change Person" : "Change Pet", choices)]
     }
 
-    /// The album (folder) each selected photo is in; Unsorted for the root. One photo's album shows that photo in it.
-    /// Photos in the Photos folder are in no album.
+    /// The album (folder) each selected photo is in. One photo's album shows that photo in it. Photos in the Photos
+    /// folder or loose at the top of the library are in no album.
     private static func showInAlbum(_ photos: [PhotoRecord], model: AppModel) -> NSMenuItem {
         var seen = Set<String>()
         let entries = photos.compactMap { photo -> NSMenuItem? in
             let folder = photo.folderPath.precomposedStringWithCanonicalMapping
             let inPhotos = folder == LibrarySettings.photosFolderName || folder.hasPrefix(LibrarySettings.photosFolderName + "/")
-            guard let id = photo.id, !inPhotos, seen.insert(photo.folderPath).inserted else { return nil }
-            let itemID = folder.isEmpty ? "unsorted" : "folder:" + folder
-            let title = folder.isEmpty ? "Unsorted"
-                : String(folder.split(separator: "/").last ?? "").replacingOccurrences(of: ":", with: "/")
+            guard let id = photo.id, !inPhotos, !folder.isEmpty, seen.insert(photo.folderPath).inserted else { return nil }
+            let itemID = "folder:" + folder
+            let title = String(folder.split(separator: "/").last ?? "").replacingOccurrences(of: ":", with: "/")
             return ClosureMenuItem(title) { model.reveal(id, in: itemID) }
         }
         let item = submenu("Show in Album", entries)

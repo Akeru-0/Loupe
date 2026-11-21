@@ -135,9 +135,9 @@ import SwiftUI
         return "\(sets) duplicate set\(sets == 1 ? "" : "s"), \(size) reclaimable"
     }
 
-    /// A folder path as the sidebar shows it: `""` is Unsorted, ":" on disk is "/" in Finder.
+    /// A folder path as the sidebar shows it: `""` is the top of the library, ":" on disk is "/" in Finder.
     nonisolated static func folderName(_ folder: String) -> String {
-        guard !folder.isEmpty else { return "Unsorted" }
+        guard !folder.isEmpty else { return "Library" }
         return folder.split(separator: "/").map { $0.replacingOccurrences(of: ":", with: "/") }.joined(separator: " ▸ ")
     }
 

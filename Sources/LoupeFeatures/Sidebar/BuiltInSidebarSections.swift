@@ -2,7 +2,7 @@ import Foundation
 import LoupeCore
 import LoupeIndex
 
-/// Library, Favorites, Recently Added, Unsorted (the photos loose in the root).
+/// Library, Favorites, Recently Added.
 struct LibrarySidebarSection: SidebarSection {
     let id = "library"
     let title: String? = nil
@@ -15,7 +15,6 @@ struct LibrarySidebarSection: SidebarSection {
             SidebarItem(
                 id: "recent", title: "Recently Added", systemImage: "clock",
                 scope: .recentlyAdded(days: settings.recentlyAddedDays)),
-            SidebarItem(id: "unsorted", title: "Unsorted", systemImage: "tray", scope: .unsorted, dropTarget: .folder("")),
         ]
     }
 }
@@ -72,7 +71,8 @@ struct UtilitiesSidebarSection: SidebarSection {
     }
 }
 
-/// Albums are folders: the real folder tree under the root. Albums take dropped photos; groups (folders with only
+/// Smart albums (`SmartAlbumStore`) first, then the folder albums. Albums are folders: the real folder tree under
+/// the root. Albums take dropped photos; groups (folders with only
 /// subfolders) show everything below them and take no drops. Keyword albums are not shown, nor are the Photos folder
 /// imports go to and Recently Deleted (`LibrarySettings.photosFolderName`, `.recentlyDeletedFolderName`).
 struct AlbumsSidebarSection: SidebarSection {
@@ -81,9 +81,15 @@ struct AlbumsSidebarSection: SidebarSection {
     let order = 100
 
     func items(index: LibraryIndex, root: URL, settings: LibrarySettings) throws -> [SidebarItem] {
-        try index.albumTree(root: root, settings: settings)
+        let smart = try SmartAlbumStore.load(root: root).map(Self.item)
+        return smart + (try index.albumTree(root: root, settings: settings)
             .filter { $0.path != LibrarySettings.photosFolderName && $0.path != LibrarySettings.recentlyDeletedFolderName }
-            .map(Self.item)
+            .map(Self.item))
+    }
+
+    /// A smart album: its photos are found by its rules, so it takes no drops.
+    static func item(_ album: SmartAlbum) -> SidebarItem {
+        SidebarItem(id: "smart:\(album.id)", title: album.name, systemImage: "gearshape", scope: .smartAlbum(album))
     }
 
     static func item(_ node: AlbumNode) -> SidebarItem {

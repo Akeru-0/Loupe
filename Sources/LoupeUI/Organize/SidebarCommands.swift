@@ -4,7 +4,7 @@ import LoupeIndex
 import SwiftUI
 
 extension SidebarItem {
-    /// The folder this item stands for: `""` for Unsorted, the path for an album or a group, nil otherwise.
+    /// The folder this item stands for: `""` for the top of the library, the path for an album or a group, nil otherwise.
     var albumFolder: String? {
         switch scope {
         case .unsorted: ""
@@ -55,21 +55,21 @@ extension AppModel {
         }
     }
 
-    /// Asks, then moves the album's photos to Unsorted and removes its folder if nothing else is in it.
+    /// Asks, then moves the album's photos to the top of the library (in no album) and removes its folder if nothing else is in it.
     func deleteAlbum(_ item: SidebarItem) async {
         guard let library, item.isAlbum, let path = item.albumFolder, let window = NSApp.keyWindow else { return }
         let alert = NSAlert()
         alert.messageText = "Delete the album “\(item.title)”?"
-        alert.informativeText = "Photos in \(item.title) move to Unsorted. Subfolders stay."
+        alert.informativeText = "Its photos stay in the library, in no album. Subfolders stay."
         alert.addButton(withTitle: "Delete Album")
         alert.addButton(withTitle: "Cancel")
         guard await alert.beginSheetModal(for: window) == .alertFirstButtonReturn else { return }
         let names = await stems(ofPhotosIn: path)
         let errors = await library.deleteAlbum(path)
-        PhotoGridController.presentErrors(errors, "Couldn't move to Unsorted", names: names, model: self)
+        PhotoGridController.presentErrors(errors, "Couldn't take out of the album", names: names, model: self)
     }
 
-    /// Moves photos (all their files) into an album folder, `""` being Unsorted, and presents per-photo errors.
+    /// Moves photos (all their files) into an album folder, `""` being the top of the library (no album), and presents per-photo errors.
     func move(_ ids: [Int64], toFolder folder: String) {
         guard let library, !ids.isEmpty else { return }
         let index = library.index
@@ -106,7 +106,7 @@ extension AppModel {
     }
 
     static func folderTitle(_ path: String) -> String {
-        path.isEmpty ? "Unsorted" : "“\(lastComponent(path).replacingOccurrences(of: ":", with: "/"))”"
+        path.isEmpty ? "the library" : "“\(lastComponent(path).replacingOccurrences(of: ":", with: "/"))”"
     }
 
     private static func lastComponent(_ path: String) -> String {
@@ -136,8 +136,9 @@ struct OrganizeError: LocalizedError {
     init(_ message: String) { errorDescription = message }
 }
 
-/// The sidebar's context menu for one item: Pin / Unpin; Change Icon… on albums and groups; New Album… on Unsorted, groups and albums (inside it),
-/// Rename… on albums and groups, Delete Album… on albums.
+/// The sidebar's context menu for one item: Pin / Unpin; Change Icon… on albums, groups and smart albums; Edit and
+/// Delete Smart Album… on smart albums; New Album… (inside it on groups and albums) and New Smart Album… on
+/// every item but devices; Rename… on albums and groups, Delete Album… on albums.
 struct SidebarItemMenu: View {
     let item: SidebarItem
     let model: AppModel
@@ -152,9 +153,22 @@ struct SidebarItemMenu: View {
         if model.canChangeIcon(item) {
             Button("Change Icon…") { model.iconPickerItemID = item.id }  // the row shows the picker
         }
+        if case .smartAlbum = item.scope {
+            Divider()
+            Button("Edit Smart Album…") { model.editSmartAlbum(item) }
+        }
+        if item.albumFolder == nil, !model.isDevice(item) {
+            Divider()
+            SidebarNewItems(model: model)
+        }
+        if case .smartAlbum = item.scope {
+            Divider()
+            Button("Delete Smart Album…") { Task { await model.deleteSmartAlbum(item) } }
+        }
         if let folder = item.albumFolder {
             Divider()
             Button("New Album…") { Task { await model.newAlbum(in: folder, select: true) } }
+            Button("New Smart Album…") { model.newSmartAlbum() }
             if !folder.isEmpty {
                 Button("Rename…") { Task { await model.renameAlbum(item) } }
             }
@@ -166,7 +180,19 @@ struct SidebarItemMenu: View {
     }
 }
 
-/// Photos dragged from the grid onto an album or Unsorted are moved there. The ids are read from the drag
+/// New Album… (at the top of Albums) and New Smart Album…: in the menu of sidebar items and of the empty sidebar.
+struct SidebarNewItems: View {
+    let model: AppModel
+
+    var body: some View {
+        Button("New Album…") { Task { await model.newAlbum(in: "", select: true) } }
+            .disabled(model.library == nil)
+        Button("New Smart Album…") { model.newSmartAlbum() }
+            .disabled(!model.canMakeSmartAlbum)
+    }
+}
+
+/// Photos dragged from the grid onto an album are moved there. The ids are read from the drag
 /// pasteboard, one per item; anything else (Finder files) is refused.
 struct SidebarDropDelegate: DropDelegate {
     let folder: String

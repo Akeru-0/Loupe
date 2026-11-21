@@ -58,6 +58,9 @@ public struct RootView: View {
                 TagEditorView(model: model, photoIDs: ids) { model.tagEditorPhotoIDs = nil }
             }
         }
+        .sheet(item: Binding(get: { model.smartAlbumEditing }, set: { model.smartAlbumEditing = $0 })) {
+            SmartAlbumEditor(model: model, editing: $0)
+        }
         .frame(minWidth: 900, minHeight: 600)
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: {
             toolbarRoom.wrappedValue.windowWidth = $0
@@ -151,6 +154,11 @@ public struct LoupeCommands: Commands {
     public init(model: AppModel) { self.model = model }
 
     public var body: some Commands {
+        CommandGroup(after: .newItem) {
+            Button("New Smart Album…") { model.newSmartAlbum() }
+                .keyboardShortcut("n", modifiers: [.command, .option])
+                .disabled(!model.canMakeSmartAlbum)
+        }
         CommandGroup(after: .pasteboard) {
             Divider()
             Button("Edit Tags…") { model.editTags() }

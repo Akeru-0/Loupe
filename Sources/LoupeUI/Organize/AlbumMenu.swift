@@ -1,8 +1,8 @@
 import AppKit
 import LoupeIndex
 
-/// The grid's organising menu items: "Add to Album ▸" (the album tree, then New Album…) and "Move to Unsorted".
-/// A photo is in exactly one album, so both move the files.
+/// The grid's organising menu items: "Add to Album ▸" (the album tree, then New Album…) and "Remove from Album"
+/// (to the top of the library, in no album). A photo is in exactly one album, so both move the files.
 @MainActor enum AlbumMenu {
     static func items(for ids: [Int64], model: AppModel) -> [NSMenuItem] {
         let tree = model.sidebar.first { $0.id == "albums" }?.items ?? []
@@ -18,8 +18,8 @@ import LoupeIndex
         })
         let add = NSMenuItem(title: "Add to Album", action: nil, keyEquivalent: "")
         add.submenu = addMenu
-        let unsorted = ClosureMenuItem("Move to Unsorted") { model.move(ids, toFolder: "") }
-        return [add, unsorted]
+        let remove = ClosureMenuItem("Remove from Album") { model.move(ids, toFolder: "") }
+        return [add, remove]
     }
 
     /// An album is clickable; one with subfolders opens a submenu that starts with the album itself.

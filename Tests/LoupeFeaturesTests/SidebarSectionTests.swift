@@ -49,10 +49,10 @@ import LoupeTestSupport
         #expect(items[2].allSatisfy { $0.dropTarget == nil })
 
         let library = items[0]
-        #expect(library.map(\.title) == ["Library", "Favorites", "Recently Added", "Unsorted"])
-        #expect(library.map(\.scope) == [.all, .favorites, .recentlyAdded(days: 30), .unsorted])
-        #expect(library.map(\.systemImage) == ["photo.on.rectangle", "heart", "clock", "tray"])
-        #expect(library.map(\.dropTarget) == [nil, nil, nil, .folder("")])
+        #expect(library.map(\.title) == ["Library", "Favorites", "Recently Added"])
+        #expect(library.map(\.scope) == [.all, .favorites, .recentlyAdded(days: 30)])
+        #expect(library.map(\.systemImage) == ["photo.on.rectangle", "heart", "clock"])
+        #expect(library.map(\.dropTarget) == [nil, nil, nil])
         #expect(library.allSatisfy { $0.children.isEmpty })
 
         // The real folder tree: a folder with photos (or an empty one) is an album, a folder with only subfolders

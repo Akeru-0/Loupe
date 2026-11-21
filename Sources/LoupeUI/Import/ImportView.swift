@@ -126,8 +126,8 @@ struct ImportView: View {
                 Spacer(minLength: 12)
                 if !result.imported.isEmpty {
                     Button(
-                        result.destinationFolder.isEmpty ? "Show Unsorted"
-                            : result.destinationFolder == LibrarySettings.photosFolderName ? "Show in Library" : "Show Album"
+                        result.destinationFolder.isEmpty || result.destinationFolder == LibrarySettings.photosFolderName
+                            ? "Show in Library" : "Show Album"
                     ) {
                         model.showImported(folder: result.destinationFolder)
                     }
