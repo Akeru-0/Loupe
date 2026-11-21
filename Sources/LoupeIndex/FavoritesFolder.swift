@@ -225,9 +225,11 @@ public struct FavoritesFolder: Sendable {
         var files: [String]
     }
 
-    /// Favorites that aren't hidden or in Recently Deleted, with their files.
+    /// Favorites that aren't hidden or in Recently Deleted, with their files. Never the folder's own copies, should
+    /// they be in the index (an older Loupe on the same library indexes the folder): copying them would copy copies.
     func favorites() throws -> [Favorite] {
         let deleted = LibrarySettings.recentlyDeletedFolderName
+        let mirror = LibrarySettings.favoritesFolderName
         let rows = try index.dbPool.read { db in
             try Row.fetchAll(
                 db,
@@ -235,9 +237,10 @@ public struct FavoritesFolder: Sendable {
                     SELECT p.id, p.folderPath, p.stem, v.path FROM photo p JOIN version v ON v.photoId = p.id
                     WHERE p.isFavorite = 1 AND p.isHidden = 0
                     AND NOT (p.folderPath = ? OR p.folderPath LIKE ? ESCAPE '\\')
+                    AND NOT (p.folderPath = ? COLLATE NOCASE OR p.folderPath LIKE ? ESCAPE '\\')
                     ORDER BY p.captureDate, p.id, v.id
                     """,
-                arguments: [deleted, LibraryIndex.escapeLike(deleted) + "/%"])
+                arguments: [deleted, LibraryIndex.escapeLike(deleted) + "/%", mirror, LibraryIndex.escapeLike(mirror) + "/%"])
         }
         var order: [Int64] = []
         var byID: [Int64: Favorite] = [:]

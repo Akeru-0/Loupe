@@ -126,6 +126,25 @@ import LoupeTestSupport
         #expect(!e.copies().contains { $0.hasPrefix("IMG_3") })
     }
 
+    @Test func copiesIndexedByAnOlderLoupeAreNeverCopiedAgain() async throws {
+        let e = try Env()
+        try e.lib.addJPEG("Photos/kocka1.jpg")
+        try e.lib.addSidecar("Photos/kocka1.xmp", tags: ["Favorite"])
+        _ = await e.library.initialSync()
+        _ = try e.folder.sync()
+        // Loupe 0.1.1 on the same library indexed the folder: its copy is in the index as a favorite photo.
+        try await e.library.index.dbPool.write { db in
+            var copy = PhotoRecord(locationId: "L", folderPath: "Favorites", stem: "kocka1", stemKey: "kocka1",
+                                   addedDate: Date(), isFavorite: true)
+            try copy.insert(db)
+            try db.execute(
+                sql: "INSERT INTO version(photoId, path, kind, size, modified, isDisplay) VALUES (?, 'Favorites/kocka1.jpg', 'jpeg', 1, 0, 1)",
+                arguments: [copy.id])
+        }
+        for _ in 0..<3 { _ = try e.folder.sync() }
+        #expect(e.copies() == ["kocka1.jpg", "kocka1.xmp"])  // no "kocka1 (2)"
+    }
+
     @Test func onlyTheTopFavoritesFolderIsSkipped() async throws {
         let e = try Env()
         try e.lib.addJPEG("Favorites/IMG_9.JPG")  // Loupe's folder
