@@ -21,7 +21,9 @@ TAG="v$VERSION"
 
 # Only what's on GitHub's main is released.
 [ "$(git branch --show-current)" = main ] || { echo "release from main" >&2; exit 1; }
-[ -z "$(git status --porcelain)" ] || { echo "commit or stash your changes first" >&2; exit 1; }
+# Everything that goes into the app is committed (notes elsewhere, e.g. in docs/, may be left untracked).
+[ -z "$(git status --porcelain -- Sources Resources Package.swift Package.resolved scripts)" ] \
+  || { echo "commit or stash your changes first" >&2; exit 1; }
 git fetch -q origin
 [ "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" ] || { echo "push main first (git push)" >&2; exit 1; }
 if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then echo "$TAG already exists" >&2; exit 1; fi
