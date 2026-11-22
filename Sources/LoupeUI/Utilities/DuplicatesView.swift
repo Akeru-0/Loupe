@@ -27,6 +27,20 @@ import SwiftUI
     var kept: [Int64: Int64] = [:]
     /// The set whose other copies wait for the confirmation.
     var confirming: DuplicateSet?
+    /// The sets ticked for doing the same to all of them (set ids).
+    var selected: Set<Int64> = []
+    /// The selected sets' other copies wait for the confirmation.
+    var confirmingSelected = false
+
+    /// How the copy to keep is picked in every selected set at once.
+    enum KeepRule: Hashable {
+        /// The copy whose removal frees the most: it has every file the others have (RAW + JPEG over JPEG alone).
+        case mostComplete
+        /// The copy in an album rather than in the Photos folder or loose at the top, else the most complete.
+        case inAlbum
+        /// The copy in this folder; sets with none there are left as they are.
+        case folder(String)
+    }
 
     @ObservationIgnored private var observers: [any NSObjectProtocol] = []
     @ObservationIgnored private var loadTask: Task<Void, Never>?
@@ -85,6 +99,7 @@ import SwiftUI
                     self.cells = cells
                     // A kept photo that left its set (trashed, moved away) is forgotten.
                     kept = kept.filter { setID, photo in sets.contains { $0.id == setID && $0.copies.contains { $0.photoId == photo } } }
+                    selected.formIntersection(sets.map(\.id))
                 case .failure(let error):
                     app.log("Could not load the duplicates: \(error.localizedDescription)")
                 }
@@ -108,6 +123,104 @@ import SwiftUI
     }
 
     var reclaimableBytes: Int64 { sets.reduce(0) { $0 + $1.reclaimableBytes } }
+
+    // MARK: - Several sets at once
+
+    var allSelected: Bool { !sets.isEmpty && selected.count == sets.count }
+
+    func selectAll(_ on: Bool) {
+        selected = on ? Set(sets.map(\.id)) : []
+        if on { for set in sets { pickKeeperIfNone(set) } }
+    }
+
+    /// Ticking a set also picks the copy to keep in it (the most complete) unless one was chosen, so "Move Other
+    /// Copies to Trash" works straight away.
+    func setSelected(_ set: DuplicateSet, _ on: Bool) {
+        if on {
+            selected.insert(set.id)
+            pickKeeperIfNone(set)
+        } else {
+            selected.remove(set.id)
+        }
+    }
+
+    private func pickKeeperIfNone(_ set: DuplicateSet) {
+        if kept[set.id] == nil, let photo = Self.keeper(for: set, rule: .mostComplete) { kept[set.id] = photo }
+    }
+
+    private var selectedSets: [DuplicateSet] { sets.filter { selected.contains($0.id) } }
+
+    /// Picks the copy to keep in every selected set by `rule`.
+    func keep(by rule: KeepRule) {
+        for set in selectedSets {
+            if let photo = Self.keeper(for: set, rule: rule) { kept[set.id] = photo }
+        }
+    }
+
+    nonisolated static func keeper(for set: DuplicateSet, rule: KeepRule) -> Int64? {
+        // The copy that leaves the fewest files behind; then the one with the most files, then the biggest.
+        func best(_ copies: [DuplicateSet.Copy]) -> Int64? {
+            copies.max { a, b in
+                (set.removable(keeping: a.photoId).count, a.mediaFileCount, a.bytes)
+                    < (set.removable(keeping: b.photoId).count, b.mediaFileCount, b.bytes)
+            }?.photoId
+        }
+        switch rule {
+        case .mostComplete:
+            return best(set.copies)
+        case .inAlbum:
+            let photos = LibrarySettings.photosFolderName
+            let inAlbums = set.copies.filter { !$0.folder.isEmpty && $0.folder != photos && !$0.folder.hasPrefix(photos + "/") }
+            return best(inAlbums.isEmpty ? set.copies : inAlbums)
+        case .folder(let folder):
+            return set.copies.first { $0.folder == folder }?.photoId
+        }
+    }
+
+    /// The folders the selected sets' copies are in, the most common first (for "Keep the Copy in ▸").
+    var selectedFolders: [String] {
+        var counts: [String: Int] = [:]
+        for set in selectedSets { for folder in Set(set.copies.map(\.folder)) { counts[folder, default: 0] += 1 } }
+        return counts.sorted { ($0.value, $1.key) > ($1.value, $0.key) }.prefix(15).map(\.key)
+    }
+
+    /// The photos "Move Other Copies to Trash" takes from the selected sets: their kept copy's identical copies.
+    var selectedRemovable: [(set: DuplicateSet, kept: Int64, others: [Int64])] {
+        selectedSets.compactMap { set in
+            guard let keptID = kept[set.id] else { return nil }
+            let others = set.removable(keeping: keptID)
+            return others.isEmpty ? nil : (set, keptID, others)
+        }
+    }
+
+    /// Selected sets with no copy picked to keep yet.
+    var selectedUndecided: Int { selectedSets.filter { kept[$0.id] == nil }.count }
+
+    func askToTrashSelected() {
+        if !selectedRemovable.isEmpty { confirmingSelected = true }
+    }
+
+    /// After the confirmation: set by set, each checked again on disk by the library.
+    func trashSelectedConfirmed() {
+        confirmingSelected = false
+        guard let library = app.library else { return }
+        let work = selectedRemovable
+        Task {
+            var errors: [Int64: any Error] = [:]
+            var names: [Int64: String] = [:]
+            for item in work {
+                for copy in item.set.copies { names[copy.photoId] = copy.stem }
+                errors.merge(await library.trashRedundantCopies(keeping: item.kept, others: item.others)) { a, _ in a }
+            }
+            PhotoGridController.presentErrors(errors, "Couldn't move to the Trash", names: names, model: app)
+            load()
+        }
+    }
+
+    nonisolated static func selectedTrashDetail(sets: Int) -> String {
+        "They're identical copies of the photos kept in \(sets) set\(sets == 1 ? "" : "s"), which stay. "
+            + "You can put them back from the Trash in Finder."
+    }
 
     /// Asks before moving the set's removable copies to the Trash.
     func askToTrash(_ set: DuplicateSet) {
@@ -176,12 +289,16 @@ struct DuplicatesView: View {
                 }
             } else {
                 ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 24) {
+                    // Cards side by side, as many as the width takes.
+                    LazyVGrid(
+                        columns: [GridItem(.adaptive(minimum: DuplicateSetView.minimumWidth), spacing: 16, alignment: .top)],
+                        alignment: .leading, spacing: 16
+                    ) {
                         ForEach(duplicates.sets) { set in
                             DuplicateSetView(set: set, duplicates: duplicates)
                         }
                     }
-                    .padding(20)
+                    .padding(16)
                 }
             }
         }
@@ -199,6 +316,15 @@ struct DuplicatesView: View {
                 Text(DuplicatesModel.trashDetail(kept: kept, count: set.removable(keeping: keptID).count))
             }
         }
+        .confirmationDialog(
+            DuplicatesModel.trashQuestion(count: duplicates.selectedRemovable.reduce(0) { $0 + $1.others.count }),
+            isPresented: Binding(get: { duplicates.confirmingSelected }, set: { duplicates.confirmingSelected = $0 })
+        ) {
+            Button("Move to Trash", role: .destructive) { duplicates.trashSelectedConfirmed() }
+            Button("Cancel", role: .cancel) { duplicates.confirmingSelected = false }
+        } message: {
+            Text(DuplicatesModel.selectedTrashDetail(sets: duplicates.selectedRemovable.count))
+        }
         .onAppear { duplicates.start() }
         .onDisappear { duplicates.stop() }
         .onChange(of: model.library === nil) { duplicates.load() }
@@ -212,10 +338,15 @@ struct DuplicatesView: View {
     private func header(_ duplicates: DuplicatesModel) -> some View {
         HStack(spacing: 8) {
             if !duplicates.sets.isEmpty {
+                Toggle("Select All", isOn: Binding(get: { duplicates.allSelected }, set: { duplicates.selectAll($0) }))
+                    .toggleStyle(.checkbox)
+                    .labelsHidden()
+                    .help(duplicates.allSelected ? "Deselect All" : "Select All")
                 Text(DuplicatesModel.summary(sets: duplicates.sets.count, reclaimable: duplicates.reclaimableBytes))
                     .font(.headline)
             }
             Spacer(minLength: 0)
+            if !duplicates.selected.isEmpty { selectionActions(duplicates) }
             if let p = duplicates.progress {
                 ProgressView().controlSize(.small)
                 Text("Checking \(p.done.formatted()) of \(p.total.formatted()) files…")
@@ -228,21 +359,56 @@ struct DuplicatesView: View {
         .padding(.vertical, 10)
         .background(.bar)
     }
+
+    /// For the ticked sets: which copy to keep in each, and trashing the other copies of all of them.
+    @ViewBuilder private func selectionActions(_ duplicates: DuplicatesModel) -> some View {
+        let count = duplicates.selected.count
+        let photos = duplicates.selectedRemovable.reduce(0) { $0 + $1.others.count }
+        Text("\(count) selected").foregroundStyle(.secondary).monospacedDigit()
+        Menu("Keep") {
+            Button("The Most Complete Copy") { duplicates.keep(by: .mostComplete) }
+            Button("The Copy in an Album") { duplicates.keep(by: .inAlbum) }
+            Menu("The Copy in") {
+                ForEach(duplicates.selectedFolders, id: \.self) { folder in
+                    Button(DuplicatesModel.folderName(folder)) { duplicates.keep(by: .folder(folder)) }
+                }
+            }
+        }
+        .fixedSize()
+        .help("Choose the copy to keep in each selected set")
+        Button(photos == 0 ? "Move Other Copies to Trash" : "Move \(photos) Other Cop\(photos == 1 ? "y" : "ies") to Trash") {
+            duplicates.askToTrashSelected()
+        }
+        .disabled(photos == 0)
+        .help(duplicates.selectedUndecided > 0
+            ? "\(duplicates.selectedUndecided) selected set\(duplicates.selectedUndecided == 1 ? " has" : "s have") no copy to keep yet"
+            : "Moves the other copies of the selected sets to the Trash")
+    }
 }
 
-/// One set: a card per copy, then the action.
+/// One set, as a card: its copies, then the action.
 private struct DuplicateSetView: View {
     let set: DuplicateSet
     let duplicates: DuplicatesModel
+
+    /// Two copies side by side.
+    static let minimumWidth: CGFloat = 2 * DuplicateCopyView.width + 12 + 2 * 12
 
     var body: some View {
         let keptID = duplicates.kept[set.id]
         let removable = keptID.map { set.removable(keeping: $0) } ?? []
         VStack(alignment: .leading, spacing: 10) {
-            Text("\(set.copies.first?.stem ?? "") · \(set.copies.count) copies")
-                .font(.title3.weight(.semibold))
+            Toggle(isOn: Binding(
+                get: { duplicates.selected.contains(set.id) },
+                set: { duplicates.setSelected(set, $0) }
+            )) {
+                Text("\(set.copies.first?.stem ?? "") · \(set.copies.count) copies")
+                    .font(.headline)
+                    .lineLimit(1)
+            }
+            .toggleStyle(.checkbox)
             ScrollView(.horizontal) {
-                HStack(alignment: .top, spacing: 14) {
+                HStack(alignment: .top, spacing: 12) {
                     ForEach(set.copies, id: \.photoId) { copy in
                         DuplicateCopyView(
                             copy: copy, cell: duplicates.cells[copy.photoId], library: duplicates.app.library,
@@ -262,10 +428,19 @@ private struct DuplicateSetView: View {
                 }
             }
         }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 12))
+        .overlay {
+            if duplicates.selected.contains(set.id) {
+                RoundedRectangle(cornerRadius: 12).strokeBorder(Color.accentColor.opacity(0.6), lineWidth: 1.5)
+            }
+        }
     }
 }
 
 private struct DuplicateCopyView: View {
+    static let width: CGFloat = 160
     let copy: DuplicateSet.Copy
     let cell: CellInfo?
     let library: Library?
@@ -294,7 +469,7 @@ private struct DuplicateCopyView: View {
             Text(details).font(.caption).foregroundStyle(.secondary).lineLimit(1)
             footer.font(.caption)
         }
-        .frame(width: 180, alignment: .leading)
+        .frame(width: Self.width, alignment: .leading)
         .help(DuplicatesModel.folderName(copy.folder) + " ▸ " + copy.stem)
         .task(id: cell) { await loadImage() }
     }
@@ -312,7 +487,7 @@ private struct DuplicateCopyView: View {
                 Image(decorative: cg, scale: 1).resizable().scaledToFit()
             }
         }
-        .frame(width: 180, height: 135)
+        .frame(width: Self.width, height: Self.width * 3 / 4)
         .clipShape(RoundedRectangle(cornerRadius: 8))
         .overlay {
             if status == .kept { RoundedRectangle(cornerRadius: 8).strokeBorder(Color.accentColor, lineWidth: 3) }
