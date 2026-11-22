@@ -19,7 +19,7 @@ extension AppModel {
         restoringSession = session
         // Nothing is saved while restoring; the item is shown once the sidebar lists it.
         if let item = session.item { select(withoutHistory: item) }
-        if let columns = session.columns, GridLayout.columnRange.contains(columns) { self.columns = columns }
+        if let columns = session.columns, GridLayout.zoomLevels.contains(columns) { self.columns = columns }
         topPhotoID = session.topPhotoID
     }
 

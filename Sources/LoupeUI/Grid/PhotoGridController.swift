@@ -1,6 +1,7 @@
 import AppKit
 import LoupeCore
 import LoupeIndex
+import LoupeMedia
 import Observation
 
 /// The photo grid: an `NSCollectionView` with a compositional layout and a diffable data source keyed by photo id,
@@ -34,7 +35,22 @@ import Observation
     /// Keyboard focus (the item arrows move from) and the fixed end of a ⇧-arrow range.
     private var focusID: Int64?
     private var anchorID: Int64?
+    /// The tiles are small enough for the small thumbnails alone (`updateSmallOnly`): far out, loading the full ones
+    /// for dozens of tiles at a time costs frames and shows nothing more.
+    private var smallOnly = false
+    /// Where the tiny thumbnails ahead were last loaded from (`prefetchMicrosAhead`); nil: load again.
+    private var lastMicroPrefetchY: CGFloat?
     private var magnification: CGFloat = 0
+    /// Zoomed out past the grid's last step: the mosaic shows instead (`GridLayout.isMosaic`).
+    private var isMosaic: Bool { GridLayout.isMosaic(columns) }
+    private lazy var mosaicView: MosaicView = {
+        let mosaic = MosaicView()
+        mosaic.onClick = { [weak self] id in self?.zoomIn(to: id) }
+        mosaic.onMagnify = { [weak self] event in self?.magnify(event) }
+        return mosaic
+    }()
+    /// The photo a click in the mosaic zooms in to.
+    private var zoomTarget: Int64?
     private var changeObserver: (any NSObjectProtocol)?
     private var scrollObserver: (any NSObjectProtocol)?
 
@@ -69,7 +85,7 @@ import Observation
         dataSource = NSCollectionViewDiffableDataSource<String, Int64>(collectionView: collectionView) {
             [weak self] collectionView, indexPath, id in
             let item = collectionView.makeItem(withIdentifier: PhotoCell.identifier, for: indexPath) as! PhotoCell
-            item.configure(id: id, info: self?.infos[id], loader: self?.loader)
+            item.configure(id: id, info: self?.infos[id], loader: self?.loader, smallOnly: self?.smallOnly ?? false)
             return item
         }
         dataSource.supplementaryViewProvider = { [weak self] collectionView, kind, indexPath in
@@ -82,7 +98,7 @@ import Observation
         let scrollView = NSScrollView()
         scrollView.hasVerticalScroller = true
         scrollView.autohidesScrollers = true
-        scrollView.documentView = collectionView
+        scrollView.documentView = isMosaic ? mosaicView : collectionView
         view = scrollView
     }
 
@@ -98,7 +114,12 @@ import Observation
         scrollObserver = NotificationCenter.default.addObserver(
             forName: NSView.boundsDidChangeNotification, object: clipView, queue: .main
         ) { [weak self] _ in
-            MainActor.assumeIsolated { self?.updateVisibleInfo() }
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                if self.isMosaic { self.mosaicView.updateTiles() }
+                self.updateVisibleInfo()
+                self.prefetchMicrosAhead()
+            }
         }
         observeModel()
         modelChanged()
@@ -107,10 +128,49 @@ import Observation
     override func viewDidAppear() {
         super.viewDidAppear()
         view.window?.makeFirstResponder(collectionView)
+        // Previews drawn in this screen's colours need no conversion while scrolling.
+        if let space = view.window?.screen?.colorSpace?.cgColorSpace { ThumbnailCache.displayColorSpace = space }
+        #if DEBUG || LOUPE_BENCH
+        startBenchmarkIfRequested()
+        #endif
     }
+
+    #if DEBUG || LOUPE_BENCH
+    private static var benchmark: ScrollBenchmark?
+
+    /// See `ScrollBenchmark`: once the scan is done and the grid shows the library.
+    private func startBenchmarkIfRequested() {
+        guard Self.benchmark == nil, let request = ScrollBenchmark.requested else { return }
+        if let columns = request.columns { model.columns = columns }
+        Task { [weak self] in
+            while let self, self.model.isScanning || self.shownSections.isEmpty {
+                try? await Task.sleep(for: .milliseconds(500))
+            }
+            try? await Task.sleep(for: .seconds(2))
+            guard let self else { return }
+            let bench = ScrollBenchmark(
+                scrollView: self.view as! NSScrollView, output: request.output, speed: request.speed,
+                emptyTiles: { [weak self] in
+                    if let self, self.isMosaic { return self.mosaicView.emptyTiles }
+                    let cells = self?.collectionView.visibleItems().compactMap { $0 as? PhotoCell } ?? []
+                    return (cells.filter { $0.shownImage == nil }.count, cells.count)
+                },
+                done: { NSApp.terminate(nil) })
+            Self.benchmark = bench
+            bench.start()
+        }
+    }
+    #endif
 
     override func viewDidLayout() {
         super.viewDidLayout()
+        if isMosaic {
+            mosaicView.relayout()
+            return updateVisibleInfo()
+        }
+        if updateSmallOnly() {  // the window got wider: bigger tiles
+            reconfigureVisible(Set(collectionView.visibleItems().compactMap { ($0 as? PhotoCell)?.photoID }))
+        }
         updateVisibleInfo()
     }
 
@@ -122,6 +182,7 @@ import Observation
     /// Tells the model the months of the dated photos on screen (the toolbar's subtitle) and the photo at the top
     /// (remembered for the next launch).
     private func updateVisibleInfo() {
+        if isMosaic { return updateMosaicVisibleInfo() }
         let rect = collectionView.visibleRect
         var first: Date?
         var last: Date?
@@ -148,6 +209,14 @@ import Observation
 
     /// After launch: scrolls the remembered photo to the top once the restored view shows it.
     private func restorePendingTop() {
+        if isMosaic, let id = model.pendingTopPhotoID, shownSections == model.photoSections,
+            mosaicView.photos.contains(where: { $0.id == id })
+        {
+            model.pendingTopPhotoID = nil
+            mosaicView.relayout()
+            mosaicView.scroll(toTop: id)
+            return
+        }
         guard let id = model.pendingTopPhotoID, shownSections == model.photoSections,
             let path = dataSource.indexPath(for: id)
         else { return }
@@ -297,6 +366,7 @@ import Observation
             infos[id] = loaded[id]
             changed.insert(id)
         }
+        if isMosaic, !changed.isEmpty { showMosaicPhotos() }
         reconfigureVisible(changed)
     }
 
@@ -309,10 +379,15 @@ import Observation
         }
         shownSections = sections
         dataSource.apply(snapshot, animatingDifferences: false)
+        if isMosaic { showMosaicPhotos() }
         syncSelectionFromModel(prune: sections == model.photoSections)
         revealPending()
         restorePendingTop()
-        DispatchQueue.main.async { [weak self] in self?.updateVisibleInfo() }  // once the new items are laid out
+        lastMicroPrefetchY = nil
+        DispatchQueue.main.async { [weak self] in  // once the new items are laid out
+            self?.updateVisibleInfo()
+            self?.prefetchMicrosAhead()
+        }
     }
 
     /// Show in Library / Show in Album: once the new view's photos are shown, selects the photo and scrolls to it.
@@ -328,7 +403,9 @@ import Observation
     private func reconfigureVisible(_ ids: Set<Int64>) {
         guard !ids.isEmpty else { return }
         for case let cell as PhotoCell in collectionView.visibleItems() {
-            if let id = cell.photoID, ids.contains(id) { cell.configure(id: id, info: infos[id], loader: loader) }
+            if let id = cell.photoID, ids.contains(id) {
+                cell.configure(id: id, info: infos[id], loader: loader, smallOnly: smallOnly)
+            }
         }
     }
 
@@ -661,8 +738,7 @@ import Observation
     // MARK: - Zoom and layout
 
     private func zoom(by delta: Int) {
-        let range = GridLayout.columnRange
-        model.columns = min(range.upperBound, max(range.lowerBound, model.columns + delta))
+        model.columns = GridLayout.zoomed(model.columns, by: delta)
     }
 
     func magnify(_ event: NSEvent) {
@@ -681,6 +757,7 @@ import Observation
     /// The change reads as a zoom around that photo (unless Reduce Motion is on): a picture of the old tiles scales
     /// and fades out while the new layout scales into place.
     private func applyColumns(_ n: Int) {
+        if GridLayout.isMosaic(n) || isMosaic { return switchMosaic(to: n) }
         let visible = collectionView.visibleItems().compactMap { collectionView.indexPath(for: $0) }
         let anchor = visible.filter(collectionView.selectionIndexPaths.contains).min() ?? visible.min()
         let anchorFrame = anchor.flatMap { collectionView.layoutAttributesForItem(at: $0)?.frame }
@@ -690,7 +767,9 @@ import Observation
         let ghost = animates ? makeZoomGhost() : nil
         let oldSide = tileSide()
         columns = n
+        let grew = updateSmallOnly()
         collectionView.collectionViewLayout?.invalidateLayout()
+        defer { if grew { reconfigureVisible(Set(collectionView.visibleItems().compactMap { ($0 as? PhotoCell)?.photoID })) } }
         defer { DispatchQueue.main.async { [weak self] in self?.updateVisibleInfo() } }
         collectionView.layoutSubtreeIfNeeded()
         guard let anchor, let offset, let frame = collectionView.layoutAttributesForItem(at: anchor)?.frame else { return }
@@ -701,8 +780,100 @@ import Observation
         }
     }
 
+    // MARK: - Mosaic
+
+    /// Into, within or out of the mosaic, keeping the photo at the top (or the one clicked) in view.
+    private func switchMosaic(to n: Int) {
+        let scrollView = view as! NSScrollView
+        let anchor = zoomTarget ?? (isMosaic ? mosaicView.topPhotoID : gridTopPhotoID())
+        zoomTarget = nil
+        let wasMosaic = isMosaic
+        columns = n
+        if wasMosaic != isMosaic, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            let fade = CATransition()
+            fade.type = .fade
+            fade.duration = 0.2
+            scrollView.layer?.add(fade, forKey: "loupe.mosaic")
+        }
+        if isMosaic {
+            mosaicView.loader = loader
+            mosaicView.columns = n
+            if scrollView.documentView !== mosaicView { scrollView.documentView = mosaicView }
+            showMosaicPhotos()
+            mosaicView.relayout(width: scrollView.contentView.bounds.width)
+            if let anchor { mosaicView.scroll(toTop: anchor) }
+            mosaicView.updateTiles()
+            view.window?.makeFirstResponder(mosaicView)
+        } else {
+            scrollView.documentView = collectionView
+            updateSmallOnly()
+            collectionView.collectionViewLayout?.invalidateLayout()
+            collectionView.layoutSubtreeIfNeeded()
+            if let anchor, let path = dataSource.indexPath(for: anchor) {
+                collectionView.scrollToItems(at: [path], scrollPosition: .centeredVertically)
+            }
+            reconfigureVisible(Set(collectionView.visibleItems().compactMap { ($0 as? PhotoCell)?.photoID }))
+            view.window?.makeFirstResponder(collectionView)
+        }
+        DispatchQueue.main.async { [weak self] in self?.updateVisibleInfo() }
+    }
+
+    /// A photo clicked in the mosaic: back to the grid, that photo selected and in the middle.
+    private func zoomIn(to id: Int64) {
+        zoomTarget = id
+        model.selection = [id]
+        model.columns = GridLayout.defaultColumns(for: .all)
+    }
+
+    private func showMosaicPhotos() {
+        mosaicView.loader = loader
+        mosaicView.photos = shownSections.flatMap { section in
+            section.photoIDs.enumerated().map { i, id in
+                let info = infos[id]
+                return MosaicView.Photo(
+                    id: id, file: info?.displayFile, kind: info?.displayKind ?? .jpeg, rotation: info?.rotation,
+                    date: section.captureDates.indices.contains(i) ? section.captureDates[i] : nil)
+            }
+        }
+    }
+
+    /// The grid's top visible photo (the selected one if one is on screen).
+    private func gridTopPhotoID() -> Int64? {
+        let visible = collectionView.visibleItems().compactMap { collectionView.indexPath(for: $0) }
+        let path = visible.filter(collectionView.selectionIndexPaths.contains).min() ?? visible.min()
+        return path.flatMap { dataSource.itemIdentifier(for: $0) }
+    }
+
+    private func updateMosaicVisibleInfo() {
+        let dates = mosaicView.visibleDates
+        let calendar = Calendar.current
+        func month(_ date: Date) -> Date { calendar.dateInterval(of: .month, for: date)?.start ?? date }
+        var months: ClosedRange<Date>?
+        if let first = dates.min(), let last = dates.max() { months = month(first)...month(last) }
+        if model.visibleMonths != months { model.visibleMonths = months }
+        if model.pendingTopPhotoID == nil, let top = mosaicView.topPhotoID { model.noteTopPhoto(top) }
+    }
+
     private func tileSide() -> CGFloat {
         GridLayout.metrics(containerWidth: collectionView.bounds.width, columns: columns).side
+    }
+
+    /// Whether a tile of this many pixels needs no more than the small thumbnail (a little blur doesn't show
+    /// that small).
+    static func smallThumbnailSuffices(tilePixels: CGFloat) -> Bool {
+        tilePixels <= CGFloat(ThumbnailCache.microPixelSize) * 1.15
+    }
+
+    /// Works out `smallOnly` for the tile size now. Returns true when tiles outgrew the small thumbnails, so the
+    /// ones shown load their full thumbnails.
+    @discardableResult
+    private func updateSmallOnly() -> Bool {
+        let scale = view.window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
+        let side = tileSide()
+        guard side > 1 else { return false }
+        let now = Self.smallThumbnailSuffices(tilePixels: side * scale)
+        defer { smallOnly = now }
+        return smallOnly && !now
     }
 
     private static let zoomDuration: CFTimeInterval = 0.25
@@ -843,11 +1014,30 @@ import Observation
 
     // MARK: - Prefetching and drag out
 
+    /// Tiny thumbnails for two screens above and below what's shown, so even a fast scroll finds them in memory
+    /// (the collection view's own prefetching reaches only a little way). Again only after the view moved half a
+    /// screen.
+    private func prefetchMicrosAhead() {
+        guard let loader, !isMosaic else { return }
+        let visible = collectionView.visibleRect
+        guard visible.height > 0 else { return }
+        if let last = lastMicroPrefetchY, abs(visible.minY - last) < visible.height / 2 { return }
+        lastMicroPrefetchY = visible.minY
+        let ahead = visible.insetBy(dx: 0, dy: -2 * visible.height)
+        for attributes in collectionView.collectionViewLayout?.layoutAttributesForElements(in: ahead) ?? []
+        where attributes.representedElementCategory == .item {
+            guard let path = attributes.indexPath, let id = dataSource.itemIdentifier(for: path), let info = infos[id]
+            else { continue }
+            loader.prefetchMicro(info.displayFile, kind: info.displayKind, rotation: info.rotation, make: smallOnly)
+        }
+    }
+
     func collectionView(_ collectionView: NSCollectionView, prefetchItemsAt indexPaths: [IndexPath]) {
         guard let loader else { return }
         for path in indexPaths {
             if let id = dataSource.itemIdentifier(for: path), let info = infos[id] {
-                loader.prefetch(info.displayFile, kind: info.displayKind, rotation: info.rotation)
+                loader.prefetchMicro(info.displayFile, kind: info.displayKind, rotation: info.rotation, make: smallOnly)
+                if !smallOnly { loader.prefetch(info.displayFile, kind: info.displayKind, rotation: info.rotation) }
             }
         }
     }

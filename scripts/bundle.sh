@@ -2,14 +2,15 @@
 # Builds Loupe and assembles build/Loupe.app (with Sparkle embedded) and signs it. No Xcode needed.
 # Usage: scripts/bundle.sh [debug|release]
 # Env:   VERSION=1.2.0 BUILD=57   stamp the version (else Resources/Info.plist's)
+#        SWIFT_FLAGS="-Xswiftc -DLOUPE_BENCH"  extra flags for swift build (here: the scroll benchmark in a release build)
 #        SIGN_IDENTITY="…"        code signing identity (default: the "Loupe" self-signed certificate if it's in
 #                                 the keychain, else ad hoc). The same identity every release keeps macOS
 #                                 permissions such as Full Disk Access across updates.
 set -e
 cd "$(dirname "$0")/.."
 CONF="${1:-debug}"
-swift build --build-system native -c "$CONF" --product Loupe
-BIN_DIR="$(swift build --build-system native -c "$CONF" --show-bin-path)"
+swift build --build-system native -c "$CONF" $SWIFT_FLAGS --product Loupe
+BIN_DIR="$(swift build --build-system native -c "$CONF" $SWIFT_FLAGS --show-bin-path)"
 APP=build/Loupe.app
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Frameworks"

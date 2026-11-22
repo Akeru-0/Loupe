@@ -4,6 +4,18 @@ import AppKit
 /// browse mode.
 public enum GridLayout {
     public static let columnRange = 3...15
+    /// Beyond the grid's last step: the mosaic (`MosaicView`), square photos edge to edge, as Photos' Years view.
+    public static let mosaicColumns = [20, 30, 40]
+    /// Every zoom step, closest first: the slider's, the zoom buttons' and a pinch's.
+    public static let zoomLevels = Array(columnRange) + mosaicColumns
+
+    public static func isMosaic(_ columns: Int) -> Bool { columns > columnRange.upperBound }
+
+    /// The step `steps` away from `columns` (positive: further out), held to the first and last.
+    public static func zoomed(_ columns: Int, by steps: Int) -> Int {
+        let index = zoomLevels.firstIndex { $0 >= columns } ?? zoomLevels.count - 1
+        return zoomLevels[min(zoomLevels.count - 1, max(0, index + steps))]
+    }
     public static let headerHeight: CGFloat = 40
 
     /// Gap between photos as a share of the tile's side, so the grid looks equally airy at every zoom level

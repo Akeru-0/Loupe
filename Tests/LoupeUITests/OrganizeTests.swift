@@ -42,4 +42,12 @@ import Testing
         #expect(PhotoGridController.range(from: 4, to: 4, in: sections) == [4])
         #expect(PhotoGridController.range(from: 99, to: 4, in: sections) == nil)  // the anchor scrolled out of view
     }
+
+    @MainActor @Test func farOutTilesShowOnlyTheSmallThumbnail() {
+        // 15 columns in a 1,400 pt grid on a Retina screen: tiles of about 85 pt, 170 px.
+        let side = GridLayout.metrics(containerWidth: 1400, columns: 15).side
+        #expect(PhotoGridController.smallThumbnailSuffices(tilePixels: side * 2))
+        // 5 columns: big tiles want the full thumbnail.
+        #expect(!PhotoGridController.smallThumbnailSuffices(tilePixels: GridLayout.metrics(containerWidth: 1400, columns: 5).side * 2))
+    }
 }

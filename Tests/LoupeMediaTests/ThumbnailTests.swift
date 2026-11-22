@@ -36,6 +36,34 @@ private let devRaw = URL(fileURLWithPath: #filePath)
         #expect(second != nil)
     }
 
+    @Test func aTinyThumbnailIsMadeWithTheThumbnailForFastScrolling() async throws {
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let src = dir.appendingPathComponent("wide.jpg")
+        try TestImages.makeJPEG(at: src, width: 4000, height: 2000)
+        let cache = ThumbnailCache(directory: dir.appendingPathComponent("cache"))
+        let file = mediaFile(src)
+
+        #expect(await cache.microThumbnail(for: file, kind: .jpeg, rotation: nil) == nil)  // not made yet
+        // Asked to make it (a far zoomed-out grid, which loads no thumbnail): made at once.
+        let made = try #require(await cache.microThumbnail(for: file, kind: .jpeg, rotation: 3, make: true))
+        #expect(max(made.width, made.height) == ThumbnailCache.microPixelSize)
+        let full = try #require(await cache.thumbnail(for: file, kind: .jpeg, rotation: nil))
+        let micro = try #require(await cache.microThumbnail(for: file, kind: .jpeg, rotation: nil))
+        #expect(max(micro.width, micro.height) == ThumbnailCache.microPixelSize)
+        #expect(abs(Double(micro.width) / Double(micro.height) - Double(full.width) / Double(full.height)) < 0.05)
+        // A turned photo has its own.
+        #expect(await cache.microThumbnail(for: file, kind: .jpeg, rotation: 6) == nil)  // EXIF 6: a quarter turn
+
+        // Thumbnails made before tiny ones existed get theirs when next loaded.
+        let key = ThumbnailCache.key(for: file, rotation: nil)
+        let tiny = dir.appendingPathComponent("cache").appendingPathComponent(String(key.prefix(2)))
+            .appendingPathComponent("\(key).s192.jpg")
+        try FileManager.default.removeItem(at: tiny)
+        _ = await cache.thumbnail(for: file, kind: .jpeg, rotation: nil)
+        #expect(FileManager.default.fileExists(atPath: tiny.path))
+    }
+
     @Test func concurrentRequestsAllComplete() async throws {
         let dir = try makeTempDir()
         defer { try? FileManager.default.removeItem(at: dir) }

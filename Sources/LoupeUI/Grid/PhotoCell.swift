@@ -5,15 +5,21 @@ import LoupeMedia
 
 /// Thumbnails for the grid: an in-memory cache in front of the library's disk cache, plus prefetching.
 /// Decoding happens off the main thread (in `ThumbnailCache`); this class only hands out finished images.
+/// Tiny thumbnails (`ThumbnailCache.microPixelSize`) are kept apart and many more of them: a tile shows its tiny one
+/// at once while the thumbnail loads, so fast scrolling never shows empty tiles.
 @MainActor final class ThumbnailLoader {
     private let thumbnails: ThumbnailCache
     private let cache = NSCache<NSString, CGImage>()
+    private let microCache = NSCache<NSString, CGImage>()
     private var prefetches: [NSString: (token: UUID, task: Task<CGImage?, Never>)] = [:]
+    private var microLoads: [NSString: Task<CGImage?, Never>] = [:]
 
     init(thumbnails: ThumbnailCache) {
         self.thumbnails = thumbnails
         cache.countLimit = 1000
         cache.totalCostLimit = 320 << 20  // decoded bytes; the count alone allowed about 1 GB
+        microCache.countLimit = 50_000
+        microCache.totalCostLimit = 288 << 20  // ~150 KB each at most: 2,000 at the least, far more for landscape ones
     }
 
     private static func cost(_ image: CGImage) -> Int { image.bytesPerRow * image.height }
@@ -56,6 +62,81 @@ import LoupeMedia
         prefetches[key] = (token, task)
     }
 
+    func cachedMicro(_ file: MediaFile, rotation: Int?) -> CGImage? {
+        microCache.object(forKey: Self.key(file, rotation))
+    }
+
+    /// The small thumbnail. Without `make`, nil until the thumbnail was made once (cheap); with it, made now when
+    /// missing (a far zoomed-out tile, which loads nothing else). Never cancelled, loaded once.
+    func micro(for file: MediaFile, kind: VersionKind, rotation: Int?, make: Bool = false) async -> CGImage? {
+        let key = Self.key(file, rotation)
+        if let image = microCache.object(forKey: key) { return image }
+        return await loadMicro(key, file, kind, rotation, make: make, priority: .userInitiated).value
+    }
+
+    /// Loads small thumbnails ahead of the scroll (`make`: making the missing ones).
+    func prefetchMicro(_ file: MediaFile, kind: VersionKind, rotation: Int?, make: Bool = false) {
+        let key = Self.key(file, rotation)
+        guard microCache.object(forKey: key) == nil, cache.object(forKey: key) == nil else { return }
+        _ = loadMicro(key, file, kind, rotation, make: make, priority: .utility)
+    }
+
+    private func loadMicro(
+        _ key: NSString, _ file: MediaFile, _ kind: VersionKind, _ rotation: Int?, make: Bool, priority: TaskPriority
+    ) -> Task<CGImage?, Never> {
+        let pendingKey = (make ? "make|" : "read|") + (key as String) as NSString
+        if let pending = microLoads[pendingKey] { return pending }
+        let thumbnails = thumbnails
+        let task = Task(priority: priority) { [weak self] () -> CGImage? in
+            let image = await thumbnails.microThumbnail(for: file, kind: kind, rotation: rotation, make: make)
+            if let self {
+                if let image { self.microCache.setObject(image, forKey: key, cost: Self.cost(image)) }
+                self.microLoads[pendingKey] = nil
+            }
+            return image
+        }
+        microLoads[pendingKey] = task
+        return task
+    }
+
+    // MARK: The mosaic's
+
+    private let mosaicCache: NSCache<NSString, CGImage> = {
+        let cache = NSCache<NSString, CGImage>()
+        cache.totalCostLimit = 128 << 20  // 96 px pictures: about 5,000; 128 px ones: 2,500
+        return cache
+    }()
+    private var mosaicLoads: [NSString: Task<CGImage?, Never>] = [:]
+
+    func cachedMosaic(_ file: MediaFile, rotation: Int?, pixels: Int) -> CGImage? {
+        pixels >= ThumbnailCache.microPixelSize
+            ? cachedMicro(file, rotation: rotation) : mosaicCache.object(forKey: Self.mosaicKey(file, rotation, pixels))
+    }
+
+    /// A mosaic tile's picture, `pixels` across at most: the small thumbnail, read smaller when the tiles are; made
+    /// when missing.
+    func mosaic(for file: MediaFile, kind: VersionKind, rotation: Int?, pixels: Int, priority: TaskPriority = .userInitiated) async -> CGImage? {
+        if pixels >= ThumbnailCache.microPixelSize { return await micro(for: file, kind: kind, rotation: rotation, make: true) }
+        let key = Self.mosaicKey(file, rotation, pixels)
+        if let image = mosaicCache.object(forKey: key) { return image }
+        if let pending = mosaicLoads[key] { return await pending.value }
+        let thumbnails = thumbnails
+        let task = Task(priority: priority) { [weak self] () -> CGImage? in
+            let image = await thumbnails.microThumbnail(for: file, kind: kind, rotation: rotation, make: true, maxPixelSize: pixels)
+            if let self {
+                if let image { self.mosaicCache.setObject(image, forKey: key, cost: Self.cost(image)) }
+                self.mosaicLoads[key] = nil
+            }
+            return image
+        }
+        mosaicLoads[key] = task
+        return await task.value
+    }
+
+    private static func mosaicKey(_ file: MediaFile, _ rotation: Int?, _ pixels: Int) -> NSString {
+        "\(key(file, rotation))|m\(pixels)" as NSString
+    }
+
     func cancelPrefetch(_ file: MediaFile, rotation: Int?) {
         let key = Self.key(file, rotation)
         prefetches[key]?.task.cancel()
@@ -69,6 +150,8 @@ final class PhotoCell: NSCollectionViewItem {
 
     private(set) var photoID: Int64?
     private var info: CellInfo?
+    /// The tile is small enough for the small thumbnail alone (the grid zoomed far out): no full one is loaded.
+    private var smallOnly = false
     private var loadTask: Task<Void, Never>?
     private var cellView: PhotoCellView { view as! PhotoCellView }
 
@@ -82,14 +165,17 @@ final class PhotoCell: NSCollectionViewItem {
         didSet { cellView.isSelected = isSelected }
     }
 
-    /// Shows `info` for `id`. The thumbnail is reloaded only if the display file or its orientation changed.
-    func configure(id: Int64, info: CellInfo?, loader: ThumbnailLoader?) {
+    /// Shows `info` for `id`. The thumbnail is reloaded only if the display file or its orientation changed, or the
+    /// tile grew past what the small thumbnail covers. `smallOnly`: the small thumbnail is all this tile needs.
+    func configure(id: Int64, info: CellInfo?, loader: ThumbnailLoader?, smallOnly: Bool = false) {
         let sameFile = photoID == id && info != nil && info?.displayFile == self.info?.displayFile
             && info?.rotation == self.info?.rotation
+        let grew = sameFile && self.smallOnly && !smallOnly
         photoID = id
         self.info = info
+        self.smallOnly = smallOnly
         cellView.show(info)
-        guard !sameFile else { return }
+        guard !sameFile || grew else { return }
         loadTask?.cancel()
         loadTask = nil
         guard let info, let loader else {
@@ -100,9 +186,21 @@ final class PhotoCell: NSCollectionViewItem {
             cellView.setImage(image, failed: false)
             return
         }
-        cellView.setImage(nil, failed: false)
+        // The small thumbnail at once, the thumbnail when it's loaded (unless the small one is all the tile needs).
+        let micro = loader.cachedMicro(info.displayFile, rotation: info.rotation)
+        if !grew { cellView.setImage(micro, failed: false) }  // growing: the small one stays up until the big one is in
         let file = info.displayFile, rotation = info.rotation
         loadTask = Task { [weak self] in
+            if micro == nil {
+                let tiny = await loader.micro(for: file, kind: info.displayKind, rotation: rotation, make: smallOnly)
+                if !Task.isCancelled, let self, self.info?.displayFile == file, self.info?.rotation == rotation,
+                    self.cellView.image == nil
+                {
+                    // Far out, the small one is all there is: none means the photo can't be shown.
+                    if tiny != nil || smallOnly { self.cellView.setImage(tiny, failed: tiny == nil) }
+                }
+            }
+            guard !Task.isCancelled, !smallOnly else { return }
             let image = await loader.image(for: file, kind: info.displayKind, rotation: rotation)
             // A reused cell never shows another photo's thumbnail: the task is cancelled on reuse, and the file must match.
             guard !Task.isCancelled, let self, self.info?.displayFile == file, self.info?.rotation == rotation
@@ -122,15 +220,19 @@ final class PhotoCell: NSCollectionViewItem {
     }
 }
 
-/// The cell's view; lays out its layers and badges by hand (no Auto Layout per cell while scrolling).
+/// The cell's view: one view of plain layers, laid out by hand (no Auto Layout, no subviews, no live shadows per
+/// cell while scrolling). The badges are pictures drawn once with their shadow (`BadgeImages`).
 final class PhotoCellView: NSView {
     private let imageLayer = CALayer()
     private let selectionLayer = CALayer()
-    private let kinds = PhotoCellView.label()
-    private let rating = PhotoCellView.label()
-    private let heart = PhotoCellView.symbol("heart.fill")
-    private let edits = PhotoCellView.symbol("slider.horizontal.3")
-    private let placeholder = NSImageView()
+    private let kinds = CALayer()
+    private let rating = CALayer()
+    private let heart = CALayer()
+    private let edits = CALayer()
+    private let placeholder = CALayer()
+    private var kindsText = ""
+    private var ratingText = ""
+    private var failed = false
     /// Pixel size of the shown thumbnail; nil until it loads (a rounded square placeholder until then).
     private var imageSize: CGSize?
     private(set) var image: CGImage?
@@ -149,6 +251,7 @@ final class PhotoCellView: NSView {
         wantsLayer = true
         let noAnimation: [String: any CAAction] = [
             "contents": NSNull(), "bounds": NSNull(), "position": NSNull(), "cornerRadius": NSNull(),
+            "hidden": NSNull(), "frame": NSNull(),
         ]
         imageLayer.contentsGravity = .resizeAspectFill
         imageLayer.masksToBounds = true
@@ -157,11 +260,12 @@ final class PhotoCellView: NSView {
         imageLayer.actions = noAnimation
         layer?.addSublayer(imageLayer)
 
-        placeholder.image = NSImage(systemSymbolName: "photo", accessibilityDescription: nil)
-        placeholder.contentTintColor = .tertiaryLabelColor
-        placeholder.isHidden = true
-        addSubview(placeholder)
-        for v in [kinds, rating, heart, edits] as [NSView] { addSubview(v) }
+        for badge in [placeholder, kinds, rating, heart, edits] {
+            badge.actions = noAnimation
+            badge.contentsGravity = .center
+            badge.isHidden = true
+            layer?.addSublayer(badge)
+        }
 
         selectionLayer.borderWidth = 3
         selectionLayer.cornerCurve = .continuous
@@ -180,11 +284,11 @@ final class PhotoCellView: NSView {
         self.image = image
         imageLayer.contents = image
         let size = image.map { CGSize(width: $0.width, height: $0.height) }
-        if size != imageSize {
+        if size != imageSize || failed != self.failed {
             imageSize = size
+            self.failed = failed
             needsLayout = true
         }
-        placeholder.isHidden = !failed
     }
 
     /// Where the photo sits in the slot: its own aspect ratio fitted inside the square and centred, so portrait
@@ -204,12 +308,19 @@ final class PhotoCellView: NSView {
     }
 
     func show(_ info: CellInfo?) {
-        kinds.stringValue = info?.badges.joined(separator: " ") ?? ""
-        rating.stringValue = (info?.rating ?? 0) > 0 ? "★\(info!.rating)" : ""
-        heart.isHidden = info?.isFavorite != true
-        edits.isHidden = info?.hasLightCraftEdits != true
+        let kindsText = info?.badges.joined(separator: " ") ?? ""
+        let ratingText = (info?.rating ?? 0) > 0 ? "★\(info!.rating)" : ""
+        let favorite = info?.isFavorite == true, edited = info?.hasLightCraftEdits == true
+        if kindsText != self.kindsText || ratingText != self.ratingText || favorite == heart.isHidden
+            || edited == edits.isHidden
+        {
+            self.kindsText = kindsText
+            self.ratingText = ratingText
+            heart.isHidden = !favorite
+            edits.isHidden = !edited
+            needsLayout = true
+        }
         setAccessibilityLabel(info?.displayFile.url.deletingPathExtension().lastPathComponent)
-        needsLayout = true
     }
 
     override func updateLayer() {
@@ -220,53 +331,139 @@ final class PhotoCellView: NSView {
         super.layout()
         CATransaction.begin()
         CATransaction.setDisableActions(true)
+        defer { CATransaction.commit() }
         let photo = Self.photoRect(for: imageSize, in: bounds)
         let radius = Self.cornerRadius(for: photo)
         imageLayer.frame = photo
         imageLayer.cornerRadius = radius
         selectionLayer.frame = photo
         selectionLayer.cornerRadius = radius
-        CATransaction.commit()
 
-        // Badges sit in the photo's own corners, not the slot's.
-        let inset: CGFloat = 5, icon: CGFloat = 13
+        // Badges sit in the photo's own corners, not the slot's. Their pictures carry a margin for the shadow.
+        let scale = window?.backingScaleFactor ?? 2
+        let inset: CGFloat = 5 - BadgeImages.margin
         let tiny = photo.width < 56
-        for v in [kinds, rating] { v.isHidden = tiny || v.stringValue.isEmpty }
-        kinds.sizeToFit()
-        rating.sizeToFit()
-        kinds.frame.origin = CGPoint(x: photo.minX + inset, y: photo.maxY - inset - kinds.frame.height)
-        kinds.frame.size.width = min(kinds.frame.width, photo.width - 2 * inset)
-        rating.frame.origin = CGPoint(x: photo.maxX - inset - rating.frame.width, y: photo.maxY - inset - rating.frame.height)
-        heart.frame = CGRect(x: photo.maxX - inset - icon, y: photo.minY + inset, width: icon, height: icon)
-        edits.frame = CGRect(x: photo.minX + inset, y: photo.minY + inset, width: icon, height: icon)
-        let side = min(32, photo.width / 3)
-        placeholder.frame = CGRect(x: photo.midX - side / 2, y: photo.midY - side / 2, width: side, height: side)
+        func place(_ layer: CALayer, _ picture: BadgeImages.Picture?, _ origin: (CGSize) -> CGPoint) {
+            guard let picture else { return layer.isHidden = true }
+            layer.contents = picture.image
+            layer.contentsScale = scale
+            layer.frame = CGRect(origin: origin(picture.size), size: picture.size)
+        }
+        place(kinds, tiny || kindsText.isEmpty ? nil : BadgeImages.text(kindsText, scale: scale)) {
+            CGPoint(x: photo.minX + inset, y: photo.maxY - inset - $0.height)
+        }
+        if !tiny, !kindsText.isEmpty { kinds.isHidden = false }
+        place(rating, tiny || ratingText.isEmpty ? nil : BadgeImages.text(ratingText, scale: scale)) {
+            CGPoint(x: photo.maxX - inset - $0.width, y: photo.maxY - inset - $0.height)
+        }
+        if !tiny, !ratingText.isEmpty { rating.isHidden = false }
+        if !heart.isHidden {
+            place(heart, BadgeImages.symbol("heart.fill", scale: scale)) { CGPoint(x: photo.maxX - inset - $0.width, y: photo.minY + inset) }
+        }
+        if !edits.isHidden {
+            place(edits, BadgeImages.symbol("slider.horizontal.3", scale: scale)) { _ in CGPoint(x: photo.minX + inset, y: photo.minY + inset) }
+        }
+        placeholder.isHidden = !failed
+        if failed {
+            place(placeholder, BadgeImages.placeholder(scale: scale)) {
+                CGPoint(x: photo.midX - $0.width / 2, y: photo.midY - $0.height / 2)
+            }
+        }
+    }
+}
+
+/// The badges' pictures, drawn once per text or symbol and screen scale, white with a soft dark shadow, so a tile
+/// shows them without laying out text or rendering a shadow every frame.
+@MainActor enum BadgeImages {
+    struct Picture {
+        var image: CGImage
+        /// In points, shadow margin included.
+        var size: CGSize
     }
 
-    private static let badgeShadow: NSShadow = {
-        let s = NSShadow()
-        s.shadowBlurRadius = 2
-        s.shadowOffset = .zero
-        s.shadowColor = NSColor.black.withAlphaComponent(0.7)
-        return s
-    }()
+    /// Room around each picture for its shadow.
+    static let margin: CGFloat = 3
+    private static var cache: [String: Picture] = [:]
 
-    private static func label() -> NSTextField {
-        let l = NSTextField(labelWithString: "")
-        l.font = .systemFont(ofSize: 10, weight: .semibold)
-        l.textColor = .white
-        l.shadow = badgeShadow
-        l.lineBreakMode = .byTruncatingTail
-        return l
+    static func text(_ text: String, scale: CGFloat) -> Picture? {
+        picture("t|\(text)|\(scale)", scale: scale) {
+            let attributes: [NSAttributedString.Key: Any] = [
+                .font: NSFont.systemFont(ofSize: 10, weight: .semibold), .foregroundColor: NSColor.white,
+            ]
+            let string = NSAttributedString(string: text, attributes: attributes)
+            return (string.size(), { string.draw(at: $0) })
+        }
     }
 
-    private static func symbol(_ name: String) -> NSImageView {
-        let v = NSImageView()
-        v.image = NSImage(systemSymbolName: name, accessibilityDescription: nil)
-        v.contentTintColor = .white
-        v.shadow = badgeShadow
-        v.imageScaling = .scaleProportionallyUpOrDown
-        v.isHidden = true
-        return v
+    static func symbol(_ name: String, scale: CGFloat) -> Picture? {
+        picture("s|\(name)|\(scale)", scale: scale) {
+            let configuration = NSImage.SymbolConfiguration(pointSize: 11, weight: .semibold)
+                .applying(.init(paletteColors: [.white]))
+            guard let image = NSImage(systemSymbolName: name, accessibilityDescription: nil)?
+                .withSymbolConfiguration(configuration)
+            else { return (.zero, { _ in }) }
+            let side: CGFloat = 13
+            let size = image.size.width > image.size.height
+                ? CGSize(width: side, height: side * image.size.height / image.size.width)
+                : CGSize(width: side * image.size.width / image.size.height, height: side)
+            return (size, { image.draw(in: CGRect(origin: $0, size: size)) })
+        }
+    }
+
+    /// A month's label in the mosaic: "Jun 2019", white on a dark capsule.
+    static func pill(_ text: String, scale: CGFloat) -> Picture? {
+        picture("m|\(text)|\(scale)", scale: scale, shadow: false) {
+            let attributes: [NSAttributedString.Key: Any] = [
+                .font: NSFont.systemFont(ofSize: 13, weight: .semibold), .foregroundColor: NSColor.white,
+            ]
+            let string = NSAttributedString(string: text, attributes: attributes)
+            let textSize = string.size()
+            let size = CGSize(width: ceil(textSize.width) + 20, height: ceil(textSize.height) + 8)
+            return (size, { origin in
+                let capsule = NSBezierPath(roundedRect: CGRect(origin: origin, size: size), xRadius: size.height / 2, yRadius: size.height / 2)
+                NSColor.black.withAlphaComponent(0.55).setFill()
+                capsule.fill()
+                string.draw(at: CGPoint(x: origin.x + 10, y: origin.y + 4))
+            })
+        }
+    }
+
+    static func placeholder(scale: CGFloat) -> Picture? {
+        picture("p|\(scale)", scale: scale, shadow: false) {
+            guard let image = NSImage(systemSymbolName: "photo", accessibilityDescription: nil)?
+                .withSymbolConfiguration(.init(pointSize: 24, weight: .regular).applying(.init(paletteColors: [.tertiaryLabelColor])))
+            else { return (.zero, { _ in }) }
+            return (image.size, { image.draw(in: CGRect(origin: $0, size: image.size)) })
+        }
+    }
+
+    private static func picture(
+        _ key: String, scale: CGFloat, shadow: Bool = true, make: () -> (CGSize, (CGPoint) -> Void)
+    ) -> Picture? {
+        if let cached = cache[key] { return cached }
+        let (content, draw) = make()
+        guard content.width > 0, content.height > 0 else { return nil }
+        let size = CGSize(width: ceil(content.width) + 2 * margin, height: ceil(content.height) + 2 * margin)
+        guard let context = CGContext(
+            data: nil, width: Int(size.width * scale), height: Int(size.height * scale), bitsPerComponent: 8,
+            bytesPerRow: 0, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+            bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue)
+        else { return nil }
+        context.scaleBy(x: scale, y: scale)
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: false)
+        if shadow {
+            let s = NSShadow()
+            s.shadowBlurRadius = 2
+            s.shadowOffset = .zero
+            s.shadowColor = NSColor.black.withAlphaComponent(0.7)
+            s.set()
+        }
+        draw(CGPoint(x: margin, y: margin))
+        NSGraphicsContext.restoreGraphicsState()
+        guard let image = context.makeImage() else { return nil }
+        let picture = Picture(image: image, size: size)
+        cache[key] = picture
+        return picture
     }
 }

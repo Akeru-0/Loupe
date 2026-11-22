@@ -66,4 +66,27 @@ import Testing
         #expect(move(0, 2, .up) == nil)
         #expect(move(1, 1, .down) == nil)
     }
+
+    @Test func zoomStepsRunThroughTheGridIntoTheMosaic() {
+        #expect(GridLayout.zoomed(7, by: 1) == 8)
+        #expect(GridLayout.zoomed(15, by: 1) == 20)  // past the grid: the mosaic
+        #expect(GridLayout.zoomed(20, by: 1) == 30 && GridLayout.zoomed(30, by: -1) == 20)
+        #expect(GridLayout.zoomed(40, by: 1) == 40 && GridLayout.zoomed(3, by: -1) == 3)  // held at both ends
+        #expect(GridLayout.zoomed(20, by: -1) == 15)
+        #expect(!GridLayout.isMosaic(15) && GridLayout.isMosaic(20))
+    }
+
+    @MainActor @Test func theMosaicLabelsMonthsWhereTheyStartButNeverOnNeighbouringRows() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "UTC")!
+        func day(_ y: Int, _ m: Int, _ d: Int) -> Date { calendar.date(from: DateComponents(year: y, month: m, day: d))! }
+        // 4 per row: June starts row 0, July row 1 (too close: no label), August row 3.
+        let dates: [Date?] = [day(2019, 6, 1), day(2019, 6, 2), day(2019, 6, 3), day(2019, 6, 4),
+                              day(2019, 7, 1), nil, day(2019, 7, 2), day(2019, 7, 3),
+                              day(2019, 7, 4), day(2019, 7, 5), day(2019, 7, 6), day(2019, 7, 7),
+                              day(2019, 8, 1)]
+        let rows = MosaicView.monthRows(dates, columns: 4, calendar: calendar)
+        #expect(rows.map(\.row) == [0, 3])
+        #expect(rows.count == 2 && !rows[0].title.isEmpty)
+    }
 }

@@ -25,8 +25,8 @@ struct LibraryToolbar: ToolbarContent {
         static let minimumRoom: CGFloat = 256
     }
 
-    /// Grid columns the zoom slider spans; the slider runs the other way (right = fewer, larger photos).
-    private static let columnRange = GridLayout.columnRange
+    /// The zoom steps the slider spans (`GridLayout.zoomLevels`); it runs the other way (right = fewer, larger photos).
+    private static let levels = GridLayout.zoomLevels
 
     var body: some ToolbarContent {
         if model.canGoBack {
@@ -47,7 +47,7 @@ struct LibraryToolbar: ToolbarContent {
     }
 
     private var zoomSlider: some View {
-        Slider(value: zoom, in: Double(Self.columnRange.lowerBound)...Double(Self.columnRange.upperBound), step: 1) {
+        Slider(value: zoom, in: 0...Double(Self.levels.count - 1), step: 1) {
             Text("Zoom")
         } minimumValueLabel: {
             Image(systemName: "minus.magnifyingglass")
@@ -62,12 +62,12 @@ struct LibraryToolbar: ToolbarContent {
 
     private var zoomButtons: some View {
         HStack(spacing: 12) {
-            Button { model.columns += 1 } label: { zoomSymbol("minus.magnifyingglass") }
+            Button { model.columns = GridLayout.zoomed(model.columns, by: 1) } label: { zoomSymbol("minus.magnifyingglass") }
                 .help("Zoom Out")
-                .disabled(model.columns >= Self.columnRange.upperBound)
-            Button { model.columns -= 1 } label: { zoomSymbol("plus.magnifyingglass") }
+                .disabled(model.columns >= Self.levels.last!)
+            Button { model.columns = GridLayout.zoomed(model.columns, by: -1) } label: { zoomSymbol("plus.magnifyingglass") }
                 .help("Zoom In")
-                .disabled(model.columns <= Self.columnRange.lowerBound)
+                .disabled(model.columns <= Self.levels.first!)
         }
         .buttonStyle(.borderless)
         .padding(.horizontal, 10)  // room inside the toolbar's capsule, as in the action capsule
@@ -81,10 +81,10 @@ struct LibraryToolbar: ToolbarContent {
     }
 
     private var zoom: Binding<Double> {
-        let sum = Self.columnRange.lowerBound + Self.columnRange.upperBound
+        let last = Self.levels.count - 1
         return Binding(
-            get: { Double(sum - model.columns) },
-            set: { model.columns = sum - Int($0.rounded()) })
+            get: { Double(last - (Self.levels.firstIndex { $0 >= model.columns } ?? last)) },
+            set: { model.columns = Self.levels[max(0, min(last, last - Int($0.rounded())))] })
     }
 
     private var isFiltering: Bool {
